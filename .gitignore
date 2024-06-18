@@ -1,0 +1,9 @@
+target/
+debug/
+**/*.rs.bk
+*.pdb
+decrypted/abc.txt
+decrypted/cba.txt
+encrypted/save.bin
+encrypted/test.bin
+input/input.txt
