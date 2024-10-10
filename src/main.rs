@@ -266,11 +266,11 @@ impl eframe::App for MyApp {
                                 );
                             });
                     });
-                    // ui.vertical(|ui| {
-                    //     ui.label("\nChoose execution mode:");
-                    //     ui.radio_value(&mut self.mode, Mode::ECB, "ECB");
-                    //     ui.radio_value(&mut self.mode, Mode::CBC, "CBC");
-                    // });
+                    ui.vertical(|ui| {
+                        ui.label("\nChoose execution mode:");
+                        ui.radio_value(&mut self.mode, Mode::ECB, "ECB");
+                        ui.radio_value(&mut self.mode, Mode::CBC, "CBC");
+                    });
 
                     ui.vertical(|ui| {
                         ui.label("\nChoose action:");
@@ -386,34 +386,34 @@ impl eframe::App for MyApp {
             });
 
             // if i add multithreads, uncomment
-            // if self.mode == Mode::ECB {
-            //     ui.label("Select a number of threads to be used");
-            //     ui.add(egui::Slider::new(
-            //         &mut self.num_threads,
-            //         1..=num_cpus::get() - 1,
-            //     ));
-            // } else {
-            //     self.num_threads = 1;
-            // }
+            if self.mode == Mode::ECB {
+                ui.label("Select a number of threads to be used");
+                ui.add(egui::Slider::new(
+                    &mut self.num_threads,
+                    1..=num_cpus::get() - 1,
+                ));
+            } else {
+                self.num_threads = 1;
+            }
 
-            // ui.label("\n");
-            // if supports_aes_ni() {
-            //     let implem = ui.label("What implementation to use?");
-            //     egui::ComboBox::from_label(format!(""))
-            //         .selected_text(format!("{:?}", self.implmentation))
-            //         .show_ui(ui, |ui| {
-            //             ui.selectable_value(
-            //                 &mut self.implmentation,
-            //                 Implementation::Software,
-            //                 "Software",
-            //             );
-            //             ui.selectable_value(
-            //                 &mut self.implmentation,
-            //                 Implementation::Hardware,
-            //                 "Hardware",
-            //             )
-            //         });
-            // }
+            ui.label("\n");
+            if supports_aes_ni() {
+                let implem = ui.label("What implementation to use?");
+                egui::ComboBox::from_label(format!(""))
+                    .selected_text(format!("{:?}", self.implmentation))
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(
+                            &mut self.implmentation,
+                            Implementation::Software,
+                            "Software",
+                        );
+                        ui.selectable_value(
+                            &mut self.implmentation,
+                            Implementation::Hardware,
+                            "Hardware",
+                        )
+                    });
+            }
 
             ui.label("\n");
             if self.mode == Mode::ECB {
@@ -535,7 +535,6 @@ fn send(
                 mode,
                 keys,
                 iv,
-                num_threads,
             )
             .await;
             if let Err(e) = tx.send(res) {
@@ -582,7 +581,7 @@ fn process(
     let mut prev_block: Option<Vec<u8>> = None;
     let mut padded = false;
     let mut input_data: Vec<u8>;
-    let mut padding_size: usize = 0;
+    let padding_size: usize = 0;
     let mut num_padded = 0;
     let key128: [u8; 16] = keys.key128;
     let key192: [u8; 24] = keys.key192;
@@ -599,27 +598,27 @@ fn process(
             break;
         }
         if action == Action::Encrypt {
-            padding_size = 8 - (size % 8);
-            if padding_size != 8 {
+            let block_size = 16; // AES block size
+            let padding_size = block_size - (size % block_size);
+            input_data = if padding_size != block_size {
                 padded = true;
-                buffer.extend(vec![0; padding_size]);
-                input_data = buffer[..size + padding_size].to_vec();
+                let mut padded_buffer = buffer[..size].to_vec();
+                padded_buffer.extend(vec![padding_size as u8; padding_size]); // Add PKCS#7 padding
+                padded_buffer
             } else {
-                input_data = buffer[..size].to_vec();
+                buffer[..size].to_vec()
             };
         } else {
             input_data = buffer[..size].to_vec();
         }
         if action == Action::Decrypt {
             num_padded = input_data[input_data.len() - 1];
-        }       
+        } 
         (chunk_result, prev_block) = match algorithm {
             Algorithm::AES_128 => aes_128(mode, action, input_data, key128, iv, prev_block),
             Algorithm::AES_192 => aes_192(mode, action, input_data, key192, iv, prev_block),
             Algorithm::AES_256 => aes_256(mode, action, input_data, key256, iv, prev_block),
-            _ => unreachable!(),
         };
-
         if action == Action::Decrypt && size % 8 == 1 {
             let _ = chunk_result.pop();
             chunk_result.truncate(size - (num_padded as usize + 1));
@@ -646,7 +645,6 @@ async fn process_async(
     mode: Mode,
     keys: KeysArr,
     iv: [u8; 16],
-    num_threads: usize,
 ) -> Duration {
     let file = tokio::fs::File::open(&input_file.as_str())
         .await

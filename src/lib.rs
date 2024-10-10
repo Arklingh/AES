@@ -13,7 +13,7 @@ const AES_256_KEY: usize = 32;
 pub fn aes_128_encrypt(input_data: &Vec<u8>, key: [u8; AES_128_KEY]) -> (Vec<u8>, Option<Vec<u8>>) {
     let mut output = Vec::with_capacity(input_data.len());
 
-    let round_keys = expand_key_128(&key);
+    let round_keys = expand_key(128, &key);
 
     for chunk in input_data.chunks(AES_BLOCK_SIZE) {
         let mut state = initialize_state(&mut chunk.to_vec());
@@ -43,7 +43,7 @@ pub fn aes_128_encrypt(input_data: &Vec<u8>, key: [u8; AES_128_KEY]) -> (Vec<u8>
 pub fn aes_128_decrypt(input_data: &Vec<u8>, key: [u8; AES_128_KEY]) -> (Vec<u8>, Option<Vec<u8>>) {
     let mut output = Vec::with_capacity(input_data.len());
 
-    let round_keys = expand_key_128(&key);
+    let round_keys = expand_key(128, &key);
 
     for chunk in input_data.chunks(AES_BLOCK_SIZE) {
         let mut state = initialize_state(&mut chunk.to_vec());
@@ -51,14 +51,14 @@ pub fn aes_128_decrypt(input_data: &Vec<u8>, key: [u8; AES_128_KEY]) -> (Vec<u8>
         add_round_key(&mut state, &round_keys[NUM_ROUNDS_128], AES_128_KEY);
 
         for round in (1..=NUM_ROUNDS_128).rev() {
-            inv_shift_rows(&mut state);
             inv_sub_bytes(&mut state);
+            inv_shift_rows(&mut state);
             add_round_key(&mut state, &round_keys[round], AES_128_KEY);
             inv_mix_columns(&mut state);
         }
 
-        inv_shift_rows(&mut state);
         inv_sub_bytes(&mut state);
+        inv_shift_rows(&mut state);
         add_round_key(&mut state, &round_keys[0], AES_128_KEY);
 
         for i in 0..4 {
@@ -186,8 +186,7 @@ pub fn aes_256_decrypt(input_data: &Vec<u8>, key: [u8; AES_256_KEY]) -> (Vec<u8>
 }
 
 #[inline(always)]
-fn initialize_state(input_data: &mut Vec<u8>) -> [[u8; 4]; 4] {
-    input_data.resize(AES_BLOCK_SIZE, 0); // bad, move to front to control! (or move padding to back)
+fn initialize_state(input_data: &[u8]) -> [[u8; 4]; 4] {
     let mut state: [[u8; 4]; 4] = Default::default();
 
     for col in 0..4 {
@@ -208,52 +207,37 @@ fn expand_key(key_size: usize, original_key: &[u8]) -> Vec<Vec<u8>> {
         _ => panic!("Invalid key size"),
     };
 
-    let mut round_keys: Vec<Vec<u8>> = Vec::with_capacity(num_rounds + 1);
-    round_keys.push(original_key.to_vec());
+    let word_size = 4;
+    let key_words = key_size / 32;
+    let total_words = (num_rounds + 1) * word_size;
 
-    for round in 1..=num_rounds {
-        let mut new_key = round_keys[round - 1].clone();
+    let mut round_keys: Vec<u8> = Vec::with_capacity(total_words * 4);
+    round_keys.extend_from_slice(original_key);
 
-        // RotWord
-        new_key.rotate_left(1);
+    for i in key_words..total_words {
+        let mut temp = round_keys[(i - 1) * 4..i * 4].to_vec();
 
-        // // SubWord
-        for byte in &mut new_key {
-            *byte = S_BOX[*byte as usize];
+        if i % key_words == 0 {
+            temp.rotate_left(1);
+            for byte in &mut temp {
+                *byte = S_BOX[*byte as usize];
+            }
+            temp[0] ^= ROUND_CONSTANTS[i / key_words - 1];
+        } else if key_size == 256 && i % key_words == 4 {
+            for byte in &mut temp {
+                *byte = S_BOX[*byte as usize];
+            }
         }
 
-        // // XOR with round constant
-        new_key[0] ^= ROUND_CONSTANTS[round - 1];
+        for j in 0..4 {
+            temp[j] ^= round_keys[(i - key_words) * 4 + j];
+        }
 
-        round_keys.push(new_key);
+        round_keys.extend_from_slice(&temp);
     }
 
-    round_keys
-}
-
-#[inline(always)]
-fn expand_key_128(original_key: &[u8; AES_128_KEY]) -> Vec<[u8; AES_128_KEY]> {
-    let mut round_keys: Vec<[u8; AES_128_KEY]> = Vec::with_capacity(NUM_ROUNDS_128 + 1);
-    round_keys.push(*original_key);
-
-    for round in 1..=NUM_ROUNDS_128 {
-        let mut new_key = round_keys[round - 1];
-
-        // RotWord
-        new_key.rotate_left(1);
-
-        // SubWord
-        new_key
-            .iter_mut()
-            .for_each(|byte| *byte = S_BOX[*byte as usize]);
-
-        // XOR with round constant
-        new_key[0] ^= ROUND_CONSTANTS[round - 1];
-
-        round_keys.push(new_key);
-    }
-
-    round_keys
+    // Split flat array into chunks of 16 bytes (AES block size) to return
+    round_keys.chunks(16).map(|chunk| chunk.to_vec()).collect()
 }
 
 #[inline(always)]
@@ -460,30 +444,6 @@ fn s_bytes(state: &mut [u8; 16]) {
 /// Shifts the rows of the state array.
 #[inline(always)]
 fn shift_rows(state: &mut [[u8; 4]; 4]) {
-    // Shift row 1
-    let temp = state[1][0];
-    state[1][0] = state[1][1];
-    state[1][1] = state[1][2];
-    state[1][2] = state[1][3];
-    state[1][3] = temp;
-
-    // Shift row 2
-    let temp1 = state[2][0];
-    let temp2 = state[2][1];
-    state[2][0] = state[2][2];
-    state[2][1] = state[2][3];
-    state[2][2] = temp1;
-    state[2][3] = temp2;
-
-    // Shift row 3
-    let temp1 = state[3][0];
-    let temp2 = state[3][1];
-    let temp3 = state[3][2];
-    state[3][0] = state[3][3];
-    state[3][1] = temp1;
-    state[3][2] = temp2;
-    state[3][3] = temp3;
-
     state[1].rotate_left(1);
     state[2].rotate_left(2);
     state[3].rotate_left(3);
@@ -517,8 +477,6 @@ fn mix_columns(state: &mut [[u8; 4]; 4]) {
 
 #[inline(always)]
 fn add_round_key(state: &mut [[u8; 4]; 4], round_key: &[u8], key_size: usize) {
-    let columns = key_size / 4;
-
     for i in 0..4 {
         for j in 0..4 {
             state[j][i] ^= round_key[i * 4 + j];
@@ -526,15 +484,21 @@ fn add_round_key(state: &mut [[u8; 4]; 4], round_key: &[u8], key_size: usize) {
     }
 }
 
-fn add_round_key_128(state: &mut [u8; 16], round_key: &[u8]) {
-    for i in 0..16 {
-        state[i] ^= round_key[i];
+#[inline(always)]
+fn add_round_key_192(state: &mut [[u8; 4]; 4], round_key: &[u8], key_size: usize) {
+    for i in 0..4 {
+        for j in 0..4 {
+            state[j][i] ^= round_key[i * 4 + j];
+        }
     }
 }
 
-fn add_round_key_192(state: &mut [u8; 16], round_key: &[u8]) {
-    for i in 0..16 {
-        state[i] ^= round_key[i];
+#[inline(always)]
+fn add_round_key_256(state: &mut [[u8; 4]; 4], round_key: &[u8], key_size: usize) {
+    for i in 0..4 {
+        for j in 0..4 {
+            state[j][i] ^= round_key[i * 4 + j];
+        }
     }
 }
 
@@ -596,6 +560,11 @@ fn inv_mul(a: u8, b: u8) -> u8 {
     }
 
     result
+}
+
+fn pad_pkcs7(input_data: &mut Vec<u8>, block_size: usize) {
+    let padding_len = block_size - (input_data.len() % block_size);
+    input_data.extend(vec![padding_len as u8; padding_len]);
 }
 
 fn u8_array_to_u64(array: &[u8]) -> u64 {
