@@ -7,12 +7,16 @@ use eframe::Theme;
 use lib::*;
 use regex::Regex;
 use std::arch::is_x86_feature_detected;
-use std::io::{Read, Write};
+use std::fs::{File, OpenOptions};
+use std::io::{BufReader, Read, Seek, SeekFrom, Write};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{Receiver, Sender};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::io::AsyncReadExt;
 use tokio::io::AsyncWriteExt;
 use tokio::runtime::Runtime;
+use rayon::ThreadPoolBuilder;
 
 const MIN_RES_POP_WIDTH: f32 = 150.0;
 const MIN_RES_POP_HIGHT: f32 = 113.0;
@@ -164,7 +168,7 @@ impl Default for MyApp {
             },
             raw_iv: "".to_string(),
             iv: [0; 16],
-            num_threads: 1,
+            num_threads: num_cpus::get_physical(),
             result_time: Duration::new(0, 0),
             asnc: false,
             processing: false,
@@ -385,6 +389,10 @@ impl eframe::App for MyApp {
                 }
             });
 
+            ui.label("");
+            ui.label(format!("Number of CPU cores - {}", num_cpus::get_physical()));
+            ui.label("");
+
             // if i add multithreads, uncomment
             if self.mode == Mode::ECB {
                 ui.label("Select a number of threads to be used");
@@ -398,7 +406,7 @@ impl eframe::App for MyApp {
 
             ui.label("\n");
             if supports_aes_ni() {
-                let implem = ui.label("What implementation to use?");
+                ui.label("What implementation to use?");
                 egui::ComboBox::from_label(format!(""))
                     .selected_text(format!("{:?}", self.implmentation))
                     .show_ui(ui, |ui| {
@@ -575,6 +583,110 @@ fn process(
     iv: [u8; 16],
     num_threads: usize,
 ) -> Duration {
+    let input_file = File::open(&input_file).expect("Error opening input file");
+    let mut reader = BufReader::with_capacity(CHUNK_SIZE, input_file);
+    let mut buffer = vec![0; CHUNK_SIZE];
+
+    let threadpool = ThreadPoolBuilder::new()
+        .num_threads(num_threads)
+        .build()
+        .unwrap();
+
+    let output_file = Arc::new(Mutex::new(
+        OpenOptions::new()
+            .write(true)
+            .create(true)
+            .open(&output_file)
+            .expect("Failed to open output file"),
+    ));
+    let start_time = Instant::now();
+
+    let keys = Arc::new(keys);
+    let iv = Arc::new(iv);
+    let tasks_count = Arc::new(AtomicUsize::new(0));
+    let mut chunk_index = 0;
+
+    while let Ok(size) = reader.read(&mut buffer) {
+        if size == 0 {
+            break;
+        }
+
+        let input_data = buffer[..size].to_vec();
+        let chunk_keys = Arc::clone(&keys);
+        let chunk_iv = Arc::clone(&iv);
+        let output = Arc::clone(&output_file);
+        let task_count = Arc::clone(&tasks_count);
+        let current_index = chunk_index;
+
+        // Padding size and padded flag
+        let (padding_size, padded) = if action == Action::Encrypt {
+            let padding = 16 - (size % 16);
+            if padding != 16 {
+                (padding, true)
+            } else {
+                (0, false)
+            }
+        } else {
+            (0, false)
+        };
+
+        task_count.fetch_add(1, Ordering::SeqCst);
+        threadpool.spawn(move || {
+            let mut chunk_result;
+
+            if action == Action::Encrypt {
+                let mut padded_data = input_data.clone();
+                if padded {
+                    padded_data.extend(vec![padding_size as u8; padding_size]);
+                }
+                chunk_result = match algorithm {
+                    Algorithm::AES_128 => aes_128(mode, action, padded_data, chunk_keys.key128, *chunk_iv.clone(), None),
+                    Algorithm::AES_192 => aes_192(mode, action, padded_data, chunk_keys.key192, *chunk_iv.clone(), None),
+                    Algorithm::AES_256 => aes_256(mode, action, padded_data, chunk_keys.key256, *chunk_iv.clone(), None),
+                };
+            } else {
+                chunk_result = match algorithm {
+                    Algorithm::AES_128 => aes_128(mode, action, input_data.clone(), chunk_keys.key128, *chunk_iv.clone(), None),
+                    Algorithm::AES_192 => aes_192(mode, action, input_data.clone(), chunk_keys.key192, *chunk_iv.clone(), None),
+                    Algorithm::AES_256 => aes_256(mode, action, input_data.clone(), chunk_keys.key256, *chunk_iv.clone(), None),
+                };
+
+                if padded {
+                    let padding_size = *chunk_result.0.last().unwrap_or(&0) as usize;
+                    chunk_result.0.truncate(chunk_result.0.len() - padding_size);
+                }
+            }
+
+            // Write the result to the output file
+            let mut file = output.lock().unwrap();
+            file.seek(SeekFrom::Start((current_index * CHUNK_SIZE) as u64))
+                .expect("Failed to seek in output file");
+            file.write_all(&chunk_result.0).expect("Failed to write to output file");
+
+            task_count.fetch_sub(1, Ordering::SeqCst);
+        });
+
+        chunk_index += 1;
+    }
+
+    // Wait for all tasks to complete
+    while tasks_count.load(Ordering::SeqCst) > 0 {
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+
+    start_time.elapsed()
+}
+
+/* fn process(
+    input_file: String,
+    output_file: String,
+    algorithm: Algorithm,
+    action: Action,
+    mode: Mode,
+    keys: KeysArr,
+    iv: [u8; 16],
+    num_threads: usize,
+) -> Duration {
     let file = std::fs::File::open(input_file).expect("Error opening a file :(");
     let mut reader = std::io::BufReader::with_capacity(CHUNK_SIZE, file);
     let mut buffer = vec![0; CHUNK_SIZE];
@@ -635,7 +747,7 @@ fn process(
     let crypt_time = start_time.elapsed();
 
     crypt_time
-}
+} */
 
 async fn process_async(
     input_file: String,

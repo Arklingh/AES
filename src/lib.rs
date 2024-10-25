@@ -1,3 +1,8 @@
+use std::arch::x86_64::{
+    __m128i, _mm_aesenc_si128, _mm_aesenclast_si128, _mm_aeskeygenassist_si128, _mm_loadu_si128,
+    _mm_xor_si128,
+};
+
 /// The block size in bytes for AES.
 const AES_BLOCK_SIZE: usize = 16;
 
@@ -37,6 +42,53 @@ pub fn aes_128_encrypt(input_data: &Vec<u8>, key: [u8; AES_128_KEY]) -> (Vec<u8>
     }
 
     (output, None)
+}
+
+pub fn aes_ni_128_encrypt(
+    input_data: &Vec<u8>,
+    key: [u8; AES_128_KEY],
+) -> (Vec<u8>, Option<Vec<u8>>) {
+    unsafe {
+        let mut input_data = _mm_loadu_si128(input_data.as_slice().as_ptr() as *const __m128i);
+        let mut round_key = _mm_loadu_si128(key.as_ptr() as *const __m128i);
+
+        input_data = _mm_xor_si128(input_data, round_key);
+
+        // AES-128 encryption with explicit round calls
+        round_key = _mm_aeskeygenassist_si128(round_key, ROUND_CONSTANTS[0] as i32);
+        input_data = _mm_aesenc_si128(input_data, round_key);
+
+        round_key = _mm_aeskeygenassist_si128(round_key, ROUND_CONSTANTS[1] as i32);
+        input_data = _mm_aesenc_si128(input_data, round_key);
+
+        round_key = _mm_aeskeygenassist_si128(round_key, ROUND_CONSTANTS[2] as i32);
+        input_data = _mm_aesenc_si128(input_data, round_key);
+
+        round_key = _mm_aeskeygenassist_si128(round_key, ROUND_CONSTANTS[3] as i32);
+        input_data = _mm_aesenc_si128(input_data, round_key);
+
+        round_key = _mm_aeskeygenassist_si128(round_key, ROUND_CONSTANTS[4] as i32);
+        input_data = _mm_aesenc_si128(input_data, round_key);
+
+        round_key = _mm_aeskeygenassist_si128(round_key, ROUND_CONSTANTS[5] as i32);
+        input_data = _mm_aesenc_si128(input_data, round_key);
+
+        round_key = _mm_aeskeygenassist_si128(round_key, ROUND_CONSTANTS[6] as i32);
+        input_data = _mm_aesenc_si128(input_data, round_key);
+
+        round_key = _mm_aeskeygenassist_si128(round_key, ROUND_CONSTANTS[7] as i32);
+        input_data = _mm_aesenc_si128(input_data, round_key);
+
+        round_key = _mm_aeskeygenassist_si128(round_key, ROUND_CONSTANTS[8] as i32);
+        input_data = _mm_aesenc_si128(input_data, round_key);
+
+        // Final round (without MixColumns)
+        input_data = _mm_aesenclast_si128(
+            input_data,
+            _mm_aeskeygenassist_si128(round_key, ROUND_CONSTANTS[9] as i32),
+        );
+    }
+    (input_data.clone(), None)
 }
 
 #[inline(always)]
