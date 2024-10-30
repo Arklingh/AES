@@ -7,20 +7,19 @@ use eframe::Theme;
 use lib::*;
 use regex::Regex;
 use std::arch::is_x86_feature_detected;
+use std::fmt::Debug;
 use std::fs::{File, OpenOptions};
 use std::io::{BufReader, Read, Seek, SeekFrom, Write};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
-use tokio::io::AsyncReadExt;
-use tokio::io::AsyncWriteExt;
 use tokio::runtime::Runtime;
 use rayon::ThreadPoolBuilder;
 
 const MIN_RES_POP_WIDTH: f32 = 150.0;
 const MIN_RES_POP_HIGHT: f32 = 113.0;
-const CHUNK_SIZE: usize = 128 * 1024; //128KB
+const DEFAULT_BUFFER_SIZE: u32 = 128 * 1024; //128KB
 
 fn main() {
     let rt = Runtime::new().expect("Unable to create a Runtime");
@@ -45,32 +44,14 @@ fn main() {
     );
 }
 
-#[derive(PartialEq, Copy, Debug)]
-enum Mode {
-    ECB,
-    CBC,
-}
-
-impl Default for Mode {
-    fn default() -> Self {
-        Mode::ECB
-    }
-}
-
-impl Clone for Mode {
-    fn clone(&self) -> Self {
-        *self
-    }
-}
-
 #[derive(PartialEq, Debug, Copy)]
 enum Algorithm {
-    AES_128,
-    AES_192,
-    AES_256,
+    Aes128,
+    Aes192,
+    Aes256,
 }
 
-#[derive(PartialEq, Debug)]
+#[derive(PartialEq, Debug, Clone, Copy)]
 enum Implementation {
     Software,
     Hardware,
@@ -78,7 +59,7 @@ enum Implementation {
 
 impl Default for Algorithm {
     fn default() -> Self {
-        Algorithm::AES_128
+        Algorithm::Aes128
     }
 }
 
@@ -131,15 +112,12 @@ struct MyApp {
     input_file: String,
     output_file: String,
     algorithm: Algorithm,
-    mode: Mode,
     action: Action,
     raw_keys: KeysStr,
     keys: KeysArr,
-    raw_iv: String,
-    iv: [u8; 16],
     num_threads: usize,
+    buffer_size: u32,
     result_time: Duration,
-    asnc: bool,
     processing: bool,
     implmentation: Implementation,
     tx: Sender<Duration>,
@@ -153,8 +131,7 @@ impl Default for MyApp {
         Self {
             input_file: "".to_string(),
             output_file: "".to_string(),
-            algorithm: Algorithm::AES_128,
-            mode: Mode::ECB,
+            algorithm: Algorithm::Aes128,
             action: Action::Encrypt,
             raw_keys: KeysStr {
                 key128: "".to_string(),
@@ -166,11 +143,9 @@ impl Default for MyApp {
                 key192: [0; 24],
                 key256: [0; 32],
             },
-            raw_iv: "".to_string(),
-            iv: [0; 16],
             num_threads: num_cpus::get_physical(),
+            buffer_size: DEFAULT_BUFFER_SIZE,
             result_time: Duration::new(0, 0),
-            asnc: false,
             processing: false,
             implmentation: Implementation::Software,
             tx,
@@ -255,29 +230,28 @@ impl eframe::App for MyApp {
                             .show_ui(ui, |ui| {
                                 ui.selectable_value(
                                     &mut self.algorithm,
-                                    Algorithm::AES_128,
+                                    Algorithm::Aes128,
                                     "AES-128",
                                 );
                                 ui.selectable_value(
                                     &mut self.algorithm,
-                                    Algorithm::AES_192,
+                                    Algorithm::Aes192,
                                     "AES-192",
                                 );
                                 ui.selectable_value(
                                     &mut self.algorithm,
-                                    Algorithm::AES_256,
+                                    Algorithm::Aes256,
                                     "AES-256",
                                 );
                             });
                     });
-                    ui.vertical(|ui| {
-                        ui.label("\nChoose execution mode:");
-                        ui.radio_value(&mut self.mode, Mode::ECB, "ECB");
-                        ui.radio_value(&mut self.mode, Mode::CBC, "CBC");
-                    });
 
+                    for _ in 0..10 {
+                        ui.vertical(|_| {});
+                    }
+                    
                     ui.vertical(|ui| {
-                        ui.label("\nChoose action:");
+                        ui.label("Choose action:");
                         ui.radio_value(&mut self.action, Action::Encrypt, "Encrypt");
                         ui.radio_value(&mut self.action, Action::Decrypt, "Decrypt");
                     });
@@ -290,7 +264,7 @@ impl eframe::App for MyApp {
                         .highlight();
                 });
 
-                if self.algorithm == Algorithm::AES_128 {
+                if self.algorithm == Algorithm::Aes128 {
                     ui.vertical(|ui| {
                         ui.label("Enter the key(32-digit hex number):");
                         let key = ui.add(
@@ -299,14 +273,14 @@ impl eframe::App for MyApp {
                                 .desired_width(f32::INFINITY),
                         );
                         if key.changed() {
-                            if !check_hex_input_128(&self.raw_keys.key128)
+                            if !check_hex_input(&self.raw_keys.key128, 128)
                                 || self.raw_keys.key128.len() > 32
                             {
                                 self.raw_keys.key128 = self
                                     .raw_keys
                                     .key128
                                     .chars()
-                                    .filter(|c| check_hex_input_128(&c.to_string()))
+                                    .filter(|c| check_hex_input(&c.to_string(), 128))
                                     .collect();
                             }
                             if self.raw_keys.key128.len() > 32 {
@@ -314,7 +288,7 @@ impl eframe::App for MyApp {
                             }
                         }
                     });
-                } else if self.algorithm == Algorithm::AES_192 {
+                } else if self.algorithm == Algorithm::Aes192 {
                     ui.vertical(|ui| {
                         ui.label("Enter the key(48-digit hex number):");
                         let key = ui.add(
@@ -323,14 +297,14 @@ impl eframe::App for MyApp {
                                 .desired_width(f32::INFINITY),
                         );
                         if key.changed() {
-                            if !check_hex_input_192(&self.raw_keys.key192)
+                            if !check_hex_input(&self.raw_keys.key192, 192)
                                 || self.raw_keys.key192.len() > 48
                             {
                                 self.raw_keys.key192 = self
                                     .raw_keys
                                     .key192
                                     .chars()
-                                    .filter(|c| check_hex_input_192(&c.to_string()))
+                                    .filter(|c| check_hex_input(&c.to_string(), 192))
                                     .collect();
                             }
                             if self.raw_keys.key192.len() > 48 {
@@ -338,7 +312,7 @@ impl eframe::App for MyApp {
                             }
                         }
                     });
-                } else if self.algorithm == Algorithm::AES_256 {
+                } else if self.algorithm == Algorithm::Aes256 {
                     ui.vertical(|ui| {
                         ui.label("Enter the key(64-digit hex number):");
                         let key = ui.add(
@@ -347,14 +321,14 @@ impl eframe::App for MyApp {
                                 .desired_width(f32::INFINITY),
                         );
                         if key.changed() {
-                            if !check_hex_input_192(&self.raw_keys.key256)
+                            if !check_hex_input(&self.raw_keys.key256, 256)
                                 || self.raw_keys.key256.len() > 64
                             {
                                 self.raw_keys.key256 = self
                                     .raw_keys
                                     .key256
                                     .chars()
-                                    .filter(|c| check_hex_input_256(&c.to_string()))
+                                    .filter(|c| check_hex_input(&c.to_string(), 256))
                                     .collect();
                             }
                             if self.raw_keys.key256.len() > 64 {
@@ -364,46 +338,43 @@ impl eframe::App for MyApp {
                     });
                 };
 
-                if self.mode == Mode::ECB {
-                } else if self.mode == Mode::CBC {
-                    ui.vertical(|ui| {
-                        ui.label("\nEnter the IV(16-digit hex number):");
-                        let iv_key = ui.add(
-                            egui::TextEdit::singleline(&mut self.raw_iv)
-                                .hint_text("IV")
-                                .desired_width(f32::INFINITY),
-                        );
-                        if iv_key.changed() {
-                            if !check_hex_input(&self.raw_iv) || self.raw_iv.len() > 16 {
-                                self.raw_iv = self
-                                    .raw_iv
-                                    .chars()
-                                    .filter(|c| check_hex_input(&c.to_string()))
-                                    .collect();
-                            }
-                            if self.raw_iv.len() > 16 {
-                                self.raw_iv.truncate(16);
-                            }
-                        }
-                    });
-                }
             });
 
             ui.label("");
             ui.label(format!("Number of CPU cores - {}", num_cpus::get_physical()));
             ui.label("");
 
-            // if i add multithreads, uncomment
-            if self.mode == Mode::ECB {
-                ui.label("Select a number of threads to be used");
-                ui.add(egui::Slider::new(
-                    &mut self.num_threads,
-                    1..=num_cpus::get() - 1,
-                ));
-            } else {
-                self.num_threads = 1;
+            ui.label("Select a number of threads to be used");
+            ui.add(egui::Slider::new(
+                &mut self.num_threads,
+                1..=num_cpus::get() - 1,
+            ));
+
+            ui.label("Select buffer size(in KB):");
+            let mut buffer_sizes = vec![];
+            let mut size = 4 * 1024;
+            while size <= u32::MAX / 2 {
+                buffer_sizes.push(size);
+                size *= 2;
             }
 
+            // Convert buffer sizes to KB for display in the dropdown
+            let buffer_options: Vec<String> = buffer_sizes.iter().map(|&size| format!("{} KB", size / 1024)).collect();
+
+            // Get the current buffer size index, or default to the starting size if not found
+            let mut selected_index = buffer_sizes.iter().position(|&x| x == self.buffer_size).unwrap_or(0);
+
+            // Display a combo box for buffer size selection
+            egui::ComboBox::from_label("Buffer Size")
+                .selected_text(&buffer_options[selected_index])
+                .show_ui(ui, |ui| {
+                    for (index, label) in buffer_options.iter().enumerate() {
+                        if ui.selectable_value(&mut selected_index, index, label).clicked() {
+                            self.buffer_size = buffer_sizes[selected_index];
+                        }
+                    }
+                });
+                                  
             ui.label("\n");
             if supports_aes_ni() {
                 ui.label("What implementation to use?");
@@ -424,18 +395,11 @@ impl eframe::App for MyApp {
             }
 
             ui.label("\n");
-            if self.mode == Mode::ECB {
-                ui.checkbox(&mut self.asnc, "Asynchronous mode");
-                ui.label("\n");
-            } else {
-                self.asnc = false;
-            }
 
             ui.horizontal(|ui| {
-                let keys_are_empty = (self.raw_keys.key128.is_empty() && self.algorithm == Algorithm::AES_128 || self.raw_keys.key192.is_empty() && self.algorithm == Algorithm::AES_192 || self.raw_keys.key256.is_empty() && self.algorithm == Algorithm::AES_256)
-                    || (!check_len(&self.raw_keys.key128, self.algorithm) && self.algorithm == Algorithm::AES_128 || !check_len(&self.raw_keys.key192, self.algorithm) && self.algorithm == Algorithm::AES_192 || !check_len(&self.raw_keys.key256, self.algorithm) && self.algorithm == Algorithm::AES_256)
-                    || (self.mode == Mode::CBC
-                        && (self.raw_iv.is_empty() || self.raw_iv.len() != 16));
+                let keys_are_empty = (self.raw_keys.key128.is_empty() && self.algorithm == Algorithm::Aes128 || self.raw_keys.key192.is_empty() && self.algorithm == Algorithm::Aes192 || self.raw_keys.key256.is_empty() && self.algorithm == Algorithm::Aes256)
+                    || (!check_len(&self.raw_keys.key128, self.algorithm) && self.algorithm == Algorithm::Aes128 || !check_len(&self.raw_keys.key192, self.algorithm) && self.algorithm == Algorithm::Aes192 || !check_len(&self.raw_keys.key256, self.algorithm) && self.algorithm == Algorithm::Aes256)
+                    ;
 
                 let essential_params_are_empty =
                     keys_are_empty || self.input_file.is_empty() || self.output_file.is_empty();
@@ -467,26 +431,21 @@ impl eframe::App for MyApp {
                     
                     self.processing = true;
                     match self.algorithm {
-                        Algorithm::AES_128 => self.keys.key128 =  parse_128_key(&self.raw_keys.key128).unwrap(),
-                        Algorithm::AES_192 => self.keys.key192 =  parse_192_key(&self.raw_keys.key192).unwrap(),
-                        Algorithm::AES_256 => self.keys.key256 =  parse_256_key(&self.raw_keys.key256).unwrap(),
+                        Algorithm::Aes128 => self.keys.key128 =  parse_128_key(&self.raw_keys.key128).unwrap(),
+                        Algorithm::Aes192 => self.keys.key192 =  parse_192_key(&self.raw_keys.key192).unwrap(),
+                        Algorithm::Aes256 => self.keys.key256 =  parse_256_key(&self.raw_keys.key256).unwrap(),
                     }
 
                     if keys_valid {
-                        if self.mode == Mode::CBC {
-                            self.iv = parse_iv(&self.raw_iv).unwrap().try_into().unwrap();
-                        }
-
                         send(
                             self.input_file.clone(),
                             self.output_file.clone(),
                             self.algorithm.clone(),
                             self.action.clone(),
-                            self.mode.clone(),
+                            self.implmentation.clone(),
                             self.keys.clone(),
-                            self.iv.clone(),
                             self.num_threads.clone(),
-                            self.asnc.clone(),
+                            self.buffer_size,
                             self.tx.clone(),
                             ctx.clone(),
                         );
@@ -525,43 +484,23 @@ fn send(
     output_file: String,
     algorithm: Algorithm,
     action: Action,
-    mode: Mode,
+    implem: Implementation,
     keys: KeysArr,
-    iv: [u8; 16],
     num_threads: usize,
-    asnc: bool,
+    buffer_size: u32,
     tx: Sender<Duration>,
     ctx: egui::Context,
 ) {
-    if asnc {
-        tokio::spawn(async move {
-            let res = process_async(
-                input_file,
-                output_file,
-                algorithm,
-                action,
-                mode,
-                keys,
-                iv,
-            )
-            .await;
-            if let Err(e) = tx.send(res) {
-                eprintln!("Error sending result through channel: {}", e);
-            }
-
-            ctx.request_repaint();
-        });
-    } else {
         tokio::task::spawn_blocking(move || {
             let res = process(
                 input_file,
                 output_file,
                 algorithm,
                 action,
-                mode,
+                implem,
                 keys,
-                iv,
                 num_threads,
+                buffer_size,
             );
              
             if let Err(e) = tx.send(res) {
@@ -570,7 +509,7 @@ fn send(
 
             ctx.request_repaint();
         });
-    }
+    
 }
 
 fn process(
@@ -578,14 +517,14 @@ fn process(
     output_file: String,
     algorithm: Algorithm,
     action: Action,
-    mode: Mode,
+    implem: Implementation,
     keys: KeysArr,
-    iv: [u8; 16],
     num_threads: usize,
+    buffer_size: u32,
 ) -> Duration {
     let input_file = File::open(&input_file).expect("Error opening input file");
-    let mut reader = BufReader::with_capacity(CHUNK_SIZE, input_file);
-    let mut buffer = vec![0; CHUNK_SIZE];
+    let mut reader = BufReader::with_capacity(buffer_size as usize, input_file);
+    let mut buffer = vec![0; buffer_size as usize];
 
     let threadpool = ThreadPoolBuilder::new()
         .num_threads(num_threads)
@@ -602,7 +541,6 @@ fn process(
     let start_time = Instant::now();
 
     let keys = Arc::new(keys);
-    let iv = Arc::new(iv);
     let tasks_count = Arc::new(AtomicUsize::new(0));
     let mut chunk_index = 0;
 
@@ -613,13 +551,13 @@ fn process(
 
         let input_data = buffer[..size].to_vec();
         let chunk_keys = Arc::clone(&keys);
-        let chunk_iv = Arc::clone(&iv);
         let output = Arc::clone(&output_file);
         let task_count = Arc::clone(&tasks_count);
         let current_index = chunk_index;
+        let is_last_chunk = size < buffer_size as usize;
 
         // Padding size and padded flag
-        let (padding_size, padded) = if action == Action::Encrypt {
+        let (padding_size, padded) = if action == Action::Encrypt && is_last_chunk {
             let padding = 16 - (size % 16);
             if padding != 16 {
                 (padding, true)
@@ -640,28 +578,32 @@ fn process(
                     padded_data.extend(vec![padding_size as u8; padding_size]);
                 }
                 chunk_result = match algorithm {
-                    Algorithm::AES_128 => aes_128(mode, action, padded_data, chunk_keys.key128, *chunk_iv.clone(), None),
-                    Algorithm::AES_192 => aes_192(mode, action, padded_data, chunk_keys.key192, *chunk_iv.clone(), None),
-                    Algorithm::AES_256 => aes_256(mode, action, padded_data, chunk_keys.key256, *chunk_iv.clone(), None),
+                    Algorithm::Aes128 => aes_128(implem, action, padded_data, chunk_keys.key128),
+                    Algorithm::Aes192 => aes_192(implem, action, padded_data, chunk_keys.key192),
+                    Algorithm::Aes256 => aes_256(implem, action, padded_data, chunk_keys.key256),
                 };
             } else {
                 chunk_result = match algorithm {
-                    Algorithm::AES_128 => aes_128(mode, action, input_data.clone(), chunk_keys.key128, *chunk_iv.clone(), None),
-                    Algorithm::AES_192 => aes_192(mode, action, input_data.clone(), chunk_keys.key192, *chunk_iv.clone(), None),
-                    Algorithm::AES_256 => aes_256(mode, action, input_data.clone(), chunk_keys.key256, *chunk_iv.clone(), None),
+                    Algorithm::Aes128 => aes_128(implem, action, input_data.clone(), chunk_keys.key128),
+                    Algorithm::Aes192 => aes_192(implem, action, input_data.clone(), chunk_keys.key192),
+                    Algorithm::Aes256 => aes_256(implem, action, input_data.clone(), chunk_keys.key256),
                 };
 
-                if padded {
-                    let padding_size = *chunk_result.0.last().unwrap_or(&0) as usize;
-                    chunk_result.0.truncate(chunk_result.0.len() - padding_size);
+                if action == Action::Decrypt && is_last_chunk {
+                    let padding_size = *chunk_result.last().unwrap_or(&0) as usize;
+                    chunk_result.truncate(chunk_result.len() - padding_size);
                 }
             }
 
+            if padded {
+                chunk_result.push(padding_size as u8);
+            }
+            
             // Write the result to the output file
             let mut file = output.lock().unwrap();
-            file.seek(SeekFrom::Start((current_index * CHUNK_SIZE) as u64))
+            file.seek(SeekFrom::Start((current_index * buffer_size) as u64))
                 .expect("Failed to seek in output file");
-            file.write_all(&chunk_result.0).expect("Failed to write to output file");
+            file.write_all(&chunk_result).expect("Failed to write to output file");
 
             task_count.fetch_sub(1, Ordering::SeqCst);
         });
@@ -675,149 +617,6 @@ fn process(
     }
 
     start_time.elapsed()
-}
-
-/* fn process(
-    input_file: String,
-    output_file: String,
-    algorithm: Algorithm,
-    action: Action,
-    mode: Mode,
-    keys: KeysArr,
-    iv: [u8; 16],
-    num_threads: usize,
-) -> Duration {
-    let file = std::fs::File::open(input_file).expect("Error opening a file :(");
-    let mut reader = std::io::BufReader::with_capacity(CHUNK_SIZE, file);
-    let mut buffer = vec![0; CHUNK_SIZE];
-    let mut prev_block: Option<Vec<u8>> = None;
-    let mut padded = false;
-    let mut input_data: Vec<u8>;
-    let padding_size: usize = 0;
-    let mut num_padded = 0;
-    let key128: [u8; 16] = keys.key128;
-    let key192: [u8; 24] = keys.key192;
-    let key256: [u8; 32] = keys.key256;
-
-    let mut chunk_result: Vec<u8>;
-
-    let mut file = std::fs::File::create(&output_file).unwrap();
-
-    let start_time = Instant::now(); // Record the start time.
-
-    while let Ok(size) = reader.read(&mut buffer) {
-        if size == 0 {
-            break;
-        }
-        if action == Action::Encrypt {
-            let block_size = 16; // AES block size
-            let padding_size = block_size - (size % block_size);
-            input_data = if padding_size != block_size {
-                padded = true;
-                let mut padded_buffer = buffer[..size].to_vec();
-                padded_buffer.extend(vec![padding_size as u8; padding_size]); // Add PKCS#7 padding
-                padded_buffer
-            } else {
-                buffer[..size].to_vec()
-            };
-        } else {
-            input_data = buffer[..size].to_vec();
-        }
-        if action == Action::Decrypt {
-            num_padded = input_data[input_data.len() - 1];
-        } 
-        (chunk_result, prev_block) = match algorithm {
-            Algorithm::AES_128 => aes_128(mode, action, input_data, key128, iv, prev_block),
-            Algorithm::AES_192 => aes_192(mode, action, input_data, key192, iv, prev_block),
-            Algorithm::AES_256 => aes_256(mode, action, input_data, key256, iv, prev_block),
-        };
-        if action == Action::Decrypt && size % 8 == 1 {
-            let _ = chunk_result.pop();
-            chunk_result.truncate(size - (num_padded as usize + 1));
-        }
-        if padded {
-            chunk_result.push(padding_size as u8);
-        }
-        if let Err(e) = file.write_all(&chunk_result) {
-            eprintln!("Uh-oh, problem with writing!: {e}");
-        };
-
-    }
-
-    let crypt_time = start_time.elapsed();
-
-    crypt_time
-} */
-
-async fn process_async(
-    input_file: String,
-    output_file: String,
-    algorithm: Algorithm,
-    action: Action,
-    mode: Mode,
-    keys: KeysArr,
-    iv: [u8; 16],
-) -> Duration {
-    let file = tokio::fs::File::open(&input_file.as_str())
-        .await
-        .expect("Error opening a file :(");
-    let mut reader = tokio::io::BufReader::with_capacity(CHUNK_SIZE, file);
-    let mut buffer = vec![0; CHUNK_SIZE];
-    let mut padded = false;
-    let mut input_data: Vec<u8>;
-    let mut padding_size: usize = 0;
-    let mut num_padded = 0;
-    let mut chunk_result = Vec::new();
-    let key128 = keys.key128;
-    let key192 = keys.key192;
-    let key256 = keys.key256;
-    let mut prev_block: Option<Vec<u8>> = None;
-
-    let mut file = tokio::fs::File::create(&output_file).await.unwrap();
-
-    let start_time = Instant::now(); // Record the start time.
-
-    while let Ok(size) = reader.read(&mut buffer).await {
-        if size == 0 {
-            break;
-        }
-        if action == Action::Encrypt {
-            padding_size = 8 - (size % 8);
-            if padding_size != 8 {
-                padded = true;
-                buffer.extend(vec![0; padding_size]);
-                input_data = buffer[..size + padding_size].to_vec();
-            } else {
-                input_data = buffer[..size].to_vec();
-            };
-        } else {
-            input_data = buffer[..size].to_vec();
-        }
-        if action == Action::Decrypt {
-            num_padded = input_data[input_data.len() - 1];
-        }
-        (chunk_result, prev_block) = match algorithm {
-            Algorithm::AES_128 => aes_128(mode, action, input_data, key128, iv, prev_block),
-            Algorithm::AES_192 => aes_192(mode, action, input_data, key192, iv, prev_block),
-            Algorithm::AES_256 => aes_256(mode, action, input_data, key256, iv, prev_block),
-            _ => unreachable!(),
-        };
-        
-                if action == Action::Decrypt && size % 8 != 0 {
-            let _ = chunk_result.pop();
-            chunk_result.truncate(size - (num_padded as usize + 1));
-        }
-        if padded {
-            chunk_result.push(padding_size as u8);
-        }
-        if let Err(e) = file.write_all(&chunk_result).await {
-            eprintln!("Uh-oh, big problemo!: {e}");
-        };
-    }
-
-    let crypt_time = start_time.elapsed();
-
-    crypt_time
 }
 
 /// Collects a key_str String variable and returns a 32-digit hex Key.
@@ -871,134 +670,68 @@ fn parse_256_key(key_str: &String) -> Result<[u8; 32], &'static str> {
     }
 }
 
-
-/// Collects an iv_str String variable and returns a 16-digit hex Key.
-///
-/// # Arguments
-///
-/// * `iv_str` - The IV as a 16-character hexadecimal string.
-///
-/// # Returns
-///
-/// A `Result` containing an array of u8s (IV) if successful, otherwise an error message.
-fn parse_iv(iv_str: &str) -> Result<Vec<u8>, &'static str> {
-    if iv_str.len() == 16 {
-        let mut iv = Vec::with_capacity(16);
-        for chunk in iv_str.as_bytes().chunks(2) {
-            let byte =
-                u8::from_str_radix(std::str::from_utf8(chunk).map_err(|_| "Invalid UTF-8")?, 16)
-                    .map_err(|_| "Invalid hex format")?;
-            iv.push(byte);
-        }
-        Ok(iv)
-    } else {
-        Err("IV must be a 16-character hexadecimal string.")
-    }
-}
-
-/// Converts a u64 variable into an array of 8 u8s.
-///
-/// # Arguments
-///
-/// * `input` - The u64 variable to be converted.
-///
-/// # Returns
-///
-/// An array of 8 u8s representing the converted u64 variable.
-fn u64_to_u8_array(input: u64) -> [u8; 8] {
-    let mut result = [0u8; 8];
-
-    for i in 0..8 {
-        result[i] = ((input >> (i * 8)) & 0xFF) as u8;
-    }
-
-    result
-}
-
 #[inline(always)]
-fn aes_128(mode: Mode, action: Action, input: Vec<u8>, key: [u8; 16], iv: [u8; 16], prev_block: Option<Vec<u8>>) -> (Vec<u8>, Option<Vec<u8>>) {
-    let (result, next) = match (mode, action) {
-        (Mode::ECB, Action::Encrypt) => aes_128_encrypt(&input, key),
-        (Mode::ECB, Action::Decrypt) => aes_128_decrypt(&input, key),
-        (Mode::CBC, Action::Encrypt) => unimplemented!(), 
-        (Mode::CBC, Action::Decrypt) => unimplemented!(),
+fn aes_128(implem: Implementation, action: Action, input: Vec<u8>, key: [u8; 16]) -> Vec<u8> {
+    let result = match (implem, action) {
+        (Implementation::Software, Action::Encrypt) => aes_128_encrypt(&input, key),
+        (Implementation::Software, Action::Decrypt) => aes_128_decrypt(&input, key),
+        (Implementation::Hardware, Action::Encrypt) => aes_ni_128_encrypt(&input, key), 
+        (Implementation::Hardware, Action::Decrypt) => aes_ni_128_decrypt(&input, key),
     };
-    (result, next)  
+    result  
 }
 
-fn aes_192(mode: Mode, action: Action, input: Vec<u8>, key: [u8; 24], iv: [u8; 16], prev_block: Option<Vec<u8>>) -> (Vec<u8>, Option<Vec<u8>>) {
-    let (result, next) = match (mode, action) {
-        (Mode::ECB, Action::Encrypt) => aes_192_encrypt(&input, key),
-        (Mode::ECB, Action::Decrypt) => aes_192_decrypt(&input, key),
-        (Mode::CBC, Action::Encrypt) => unimplemented!(),
-        (Mode::CBC, Action::Decrypt) => unimplemented!(),
+fn aes_192(implem: Implementation, action: Action, input: Vec<u8>, key: [u8; 24]) -> Vec<u8> {
+    let result = match (implem, action) {
+        (Implementation::Software, Action::Encrypt) => aes_192_encrypt(&input, key),
+        (Implementation::Software, Action::Decrypt) => aes_192_decrypt(&input, key),
+        (Implementation::Hardware, Action::Encrypt) => aes_ni_192_encrypt(&input, key),
+        (Implementation::Hardware, Action::Decrypt) => unimplemented!(),
     };
-    (result, next)  
+    result  
 }
 
-fn aes_256(mode: Mode, action: Action, input: Vec<u8>, key: [u8; 32], iv: [u8; 16], prev_block: Option<Vec<u8>>) -> (Vec<u8>, Option<Vec<u8>>) {
-    let (result, next) = match (mode, action) {
-        (Mode::ECB, Action::Encrypt) => aes_256_encrypt(&input, key),
-        (Mode::ECB, Action::Decrypt) => aes_256_decrypt(&input, key),
-        (Mode::CBC, Action::Encrypt) => unimplemented!(),
-        (Mode::CBC, Action::Decrypt) => unimplemented!(),
+fn aes_256(implem: Implementation, action: Action, input: Vec<u8>, key: [u8; 32] ) -> Vec<u8> {
+    let result = match (implem, action) {
+        (Implementation::Software, Action::Encrypt) => aes_256_encrypt(&input, key),
+        (Implementation::Software, Action::Decrypt) => aes_256_decrypt(&input, key),
+        (Implementation::Hardware, Action::Encrypt) => unimplemented!(),
+        (Implementation::Hardware, Action::Decrypt) => unimplemented!(),
     };
-    (result, next)  
+    result  
 }
 
+fn check_hex_input(input: &String, length: usize) -> bool {
+    let max_length = match length {
+        128 => 16,
+        192 => 24,
+        256 => 32,
+        _ => return false, // Invalid length
+    };
 
-
-/// Reads a line from standard input, trims it, and ensures it is a valid
-/// 16-digit hex number.
-///
-/// # Arguments
-///
-/// * `input` - The input recieved from the user.
-///
-/// # Returns
-///
-/// Returns a true if input is valid 16-digit hex, false - otherwise.
-fn check_hex_input(input: &String) -> bool {
-    let hex_pattern = Regex::new(r"^[0-9A-Fa-f]{1,16}$").expect("Couldn't generate regex!");
-
-    hex_pattern.is_match(&input.trim())
-}
-
-fn check_hex_input_128(input: &String) -> bool {
-    let hex_pattern = Regex::new(r"^[0-9A-Fa-f]{1,16}$").expect("Couldn't generate regex!");
-
-    hex_pattern.is_match(&input.trim())
-}
-
-fn check_hex_input_192(input: &String) -> bool {
-    let hex_pattern = Regex::new(r"^[0-9A-Fa-f]{1,24}$").expect("Couldn't generate regex!");
-
-    hex_pattern.is_match(&input.trim())
-}
-
-fn check_hex_input_256(input: &String) -> bool {
-    let hex_pattern = Regex::new(r"^[0-9A-Fa-f]{1,32}$").expect("Couldn't generate regex!");
+    let hex_pattern = Regex::new(&format!(r"^[0-9A-Fa-f]{{1,{}}}$", max_length))
+        .expect("Couldn't generate regex!");
 
     hex_pattern.is_match(&input.trim())
 }
 
 fn check_len(input: &String, algorithm: Algorithm) -> bool {
     match algorithm {
-        Algorithm::AES_128 => {
+        Algorithm::Aes128 => {
             if input.len() < 32 {
                 false
             } else {
                 true
             }
         }
-        Algorithm::AES_192 => {
+        Algorithm::Aes192 => {
             if input.len() < 48 {
                 false
             } else {
                 true
             }
         }
-        Algorithm::AES_256 => {
+        Algorithm::Aes256 => {
             if input.len() < 64 {
                 false
             } else {
@@ -1024,17 +757,4 @@ fn supports_aes_ni() -> bool {
     }
 
     false
-}
-
-fn u64_from_bytes(bytes: &[u8]) -> u64 {
-    if bytes.len() != 8 {
-        panic!("Масив байтів повинен містити точно 8 байтів для конвертації в u64");
-    }
-
-    let mut result: u64 = 0;
-    for i in 0..8 {
-        result |= (bytes[i] as u64) << (56 - 8 * i);
-    }
-
-    result
 }

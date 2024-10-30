@@ -1,6 +1,6 @@
 use std::arch::x86_64::{
-    __m128i, _mm_aesenc_si128, _mm_aesenclast_si128, _mm_aeskeygenassist_si128, _mm_loadu_si128,
-    _mm_xor_si128,
+    __m128i, _mm_aesdec_si128, _mm_aesdeclast_si128, _mm_aesenc_si128, _mm_aesenclast_si128,
+    _mm_aeskeygenassist_si128, _mm_loadu_si128, _mm_storeu_si128, _mm_xor_si128,
 };
 
 /// The block size in bytes for AES.
@@ -15,7 +15,7 @@ const AES_192_KEY: usize = 24;
 const AES_256_KEY: usize = 32;
 
 #[inline(always)]
-pub fn aes_128_encrypt(input_data: &Vec<u8>, key: [u8; AES_128_KEY]) -> (Vec<u8>, Option<Vec<u8>>) {
+pub fn aes_128_encrypt(input_data: &Vec<u8>, key: [u8; AES_128_KEY]) -> Vec<u8> {
     let mut output = Vec::with_capacity(input_data.len());
 
     let round_keys = expand_key(128, &key);
@@ -23,38 +23,36 @@ pub fn aes_128_encrypt(input_data: &Vec<u8>, key: [u8; AES_128_KEY]) -> (Vec<u8>
     for chunk in input_data.chunks(AES_BLOCK_SIZE) {
         let mut state = initialize_state(&mut chunk.to_vec());
 
-        add_round_key(&mut state, &round_keys[0], AES_128_KEY);
+        add_round_key(&mut state, &round_keys[0]);
 
         for round in 1..NUM_ROUNDS_128 {
             sub_bytes(&mut state);
             shift_rows(&mut state);
             mix_columns(&mut state);
-            add_round_key(&mut state, &round_keys[round], AES_128_KEY);
+            add_round_key(&mut state, &round_keys[round]);
         }
 
         sub_bytes(&mut state);
         shift_rows(&mut state);
-        add_round_key(&mut state, &round_keys[NUM_ROUNDS_128], AES_128_KEY);
+        add_round_key(&mut state, &round_keys[NUM_ROUNDS_128]);
 
         for i in 0..4 {
             output.extend_from_slice(&state[i]);
         }
     }
 
-    (output, None)
+    output
 }
 
-pub fn aes_ni_128_encrypt(
-    input_data: &Vec<u8>,
-    key: [u8; AES_128_KEY],
-) -> (Vec<u8>, Option<Vec<u8>>) {
+pub fn aes_ni_128_encrypt(input_data: &Vec<u8>, key: [u8; AES_128_KEY]) -> Vec<u8> {
+    let output: Vec<u8> = Vec::with_capacity(16);
+
     unsafe {
         let mut input_data = _mm_loadu_si128(input_data.as_slice().as_ptr() as *const __m128i);
         let mut round_key = _mm_loadu_si128(key.as_ptr() as *const __m128i);
 
         input_data = _mm_xor_si128(input_data, round_key);
 
-        // AES-128 encryption with explicit round calls
         round_key = _mm_aeskeygenassist_si128(round_key, ROUND_CONSTANTS[0] as i32);
         input_data = _mm_aesenc_si128(input_data, round_key);
 
@@ -87,12 +85,14 @@ pub fn aes_ni_128_encrypt(
             input_data,
             _mm_aeskeygenassist_si128(round_key, ROUND_CONSTANTS[9] as i32),
         );
+
+        _mm_storeu_si128(output.as_ptr() as *mut __m128i, input_data)
     }
-    (input_data.clone(), None)
+    output.to_vec()
 }
 
 #[inline(always)]
-pub fn aes_128_decrypt(input_data: &Vec<u8>, key: [u8; AES_128_KEY]) -> (Vec<u8>, Option<Vec<u8>>) {
+pub fn aes_128_decrypt(input_data: &Vec<u8>, key: [u8; AES_128_KEY]) -> Vec<u8> {
     let mut output = Vec::with_capacity(input_data.len());
 
     let round_keys = expand_key(128, &key);
@@ -100,57 +100,149 @@ pub fn aes_128_decrypt(input_data: &Vec<u8>, key: [u8; AES_128_KEY]) -> (Vec<u8>
     for chunk in input_data.chunks(AES_BLOCK_SIZE) {
         let mut state = initialize_state(&mut chunk.to_vec());
 
-        add_round_key(&mut state, &round_keys[NUM_ROUNDS_128], AES_128_KEY);
+        add_round_key(&mut state, &round_keys[NUM_ROUNDS_128]);
 
         for round in (1..=NUM_ROUNDS_128).rev() {
             inv_sub_bytes(&mut state);
             inv_shift_rows(&mut state);
-            add_round_key(&mut state, &round_keys[round], AES_128_KEY);
+            add_round_key(&mut state, &round_keys[round]);
             inv_mix_columns(&mut state);
         }
 
         inv_sub_bytes(&mut state);
         inv_shift_rows(&mut state);
-        add_round_key(&mut state, &round_keys[0], AES_128_KEY);
+        add_round_key(&mut state, &round_keys[0]);
 
         for i in 0..4 {
             output.extend_from_slice(&state[i]);
         }
     }
 
-    (output, None)
+    output
 }
 
-pub fn aes_192_encrypt(input_data: &Vec<u8>, key: [u8; AES_192_KEY]) -> (Vec<u8>, Option<Vec<u8>>) {
+pub fn aes_ni_128_decrypt(input_data: &Vec<u8>, key: [u8; AES_128_KEY]) -> Vec<u8> {
+    unsafe {
+        let mut input_data = _mm_loadu_si128(input_data.as_slice().as_ptr() as *const __m128i);
+        let mut round_key = _mm_loadu_si128(key.as_ptr() as *const __m128i);
+
+        input_data = _mm_xor_si128(input_data, round_key);
+
+        // AES-128 encryption with explicit round calls
+        round_key = _mm_aeskeygenassist_si128(round_key, ROUND_CONSTANTS[9] as i32);
+        input_data = _mm_aesdec_si128(input_data, round_key);
+
+        round_key = _mm_aeskeygenassist_si128(round_key, ROUND_CONSTANTS[8] as i32);
+        input_data = _mm_aesdec_si128(input_data, round_key);
+
+        round_key = _mm_aeskeygenassist_si128(round_key, ROUND_CONSTANTS[7] as i32);
+        input_data = _mm_aesdec_si128(input_data, round_key);
+
+        round_key = _mm_aeskeygenassist_si128(round_key, ROUND_CONSTANTS[6] as i32);
+        input_data = _mm_aesdec_si128(input_data, round_key);
+
+        round_key = _mm_aeskeygenassist_si128(round_key, ROUND_CONSTANTS[5] as i32);
+        input_data = _mm_aesdec_si128(input_data, round_key);
+
+        round_key = _mm_aeskeygenassist_si128(round_key, ROUND_CONSTANTS[4] as i32);
+        input_data = _mm_aesdec_si128(input_data, round_key);
+
+        round_key = _mm_aeskeygenassist_si128(round_key, ROUND_CONSTANTS[3] as i32);
+        input_data = _mm_aesdec_si128(input_data, round_key);
+
+        round_key = _mm_aeskeygenassist_si128(round_key, ROUND_CONSTANTS[2] as i32);
+        input_data = _mm_aesdec_si128(input_data, round_key);
+
+        round_key = _mm_aeskeygenassist_si128(round_key, ROUND_CONSTANTS[1] as i32);
+        input_data = _mm_aesdec_si128(input_data, round_key);
+
+        input_data = _mm_aesdeclast_si128(
+            input_data,
+            _mm_aeskeygenassist_si128(round_key, ROUND_CONSTANTS[0] as i32),
+        );
+    }
+    input_data.to_vec()
+}
+
+pub fn aes_192_encrypt(input_data: &Vec<u8>, key: [u8; AES_192_KEY]) -> Vec<u8> {
     let mut output = Vec::with_capacity(input_data.len());
 
     let round_keys = expand_key_192(&key);
 
-    for chunk in input_data.chunks(AES_BLOCK_SIZE) {
-        let mut state = initialize_state(&mut chunk.to_vec());
+    for mut chunk in input_data.chunks_exact(AES_BLOCK_SIZE) {
+        let mut state = initialize_state(&mut chunk);
 
-        add_round_key(&mut state, &round_keys[0], AES_192_KEY);
+        add_round_key(&mut state, &round_keys[0]);
 
         for round in 1..NUM_ROUNDS_192 {
             sub_bytes(&mut state);
             shift_rows(&mut state);
             mix_columns(&mut state);
-            add_round_key(&mut state, &round_keys[round], AES_192_KEY);
+            add_round_key(&mut state, &round_keys[round]);
         }
 
         sub_bytes(&mut state);
         shift_rows(&mut state);
-        add_round_key(&mut state, &round_keys[NUM_ROUNDS_192], AES_192_KEY);
+        add_round_key(&mut state, &round_keys[NUM_ROUNDS_192]);
 
-        for i in 0..4 {
-            output.extend_from_slice(&state[i]);
+        for col in state.iter() {
+            output.extend_from_slice(col);
         }
     }
 
-    (output, None)
+    output
 }
 
-pub fn aes_192_decrypt(input_data: &Vec<u8>, key: [u8; AES_192_KEY]) -> (Vec<u8>, Option<Vec<u8>>) {
+pub fn aes_ni_192_encrypt(input_data: &Vec<u8>, key: [u8; AES_192_KEY]) -> Vec<u8> {
+    let output: Vec<u8> = Vec::with_capacity(16);
+
+    unsafe {
+        let mut input_data = _mm_loadu_si128(input_data.as_slice().as_ptr() as *const __m128i);
+        let mut round_key = _mm_loadu_si128(key.as_ptr() as *const __m128i);
+
+        input_data = _mm_xor_si128(input_data, round_key);
+
+        round_key = _mm_aeskeygenassist_si128(round_key, ROUND_CONSTANTS[0] as i32);
+        input_data = _mm_aesenc_si128(input_data, round_key);
+
+        round_key = _mm_aeskeygenassist_si128(round_key, ROUND_CONSTANTS[1] as i32);
+        input_data = _mm_aesenc_si128(input_data, round_key);
+
+        round_key = _mm_aeskeygenassist_si128(round_key, ROUND_CONSTANTS[2] as i32);
+        input_data = _mm_aesenc_si128(input_data, round_key);
+
+        round_key = _mm_aeskeygenassist_si128(round_key, ROUND_CONSTANTS[3] as i32);
+        input_data = _mm_aesenc_si128(input_data, round_key);
+
+        round_key = _mm_aeskeygenassist_si128(round_key, ROUND_CONSTANTS[4] as i32);
+        input_data = _mm_aesenc_si128(input_data, round_key);
+
+        round_key = _mm_aeskeygenassist_si128(round_key, ROUND_CONSTANTS[5] as i32);
+        input_data = _mm_aesenc_si128(input_data, round_key);
+
+        round_key = _mm_aeskeygenassist_si128(round_key, ROUND_CONSTANTS[6] as i32);
+        input_data = _mm_aesenc_si128(input_data, round_key);
+
+        round_key = _mm_aeskeygenassist_si128(round_key, ROUND_CONSTANTS[7] as i32);
+        input_data = _mm_aesenc_si128(input_data, round_key);
+
+        round_key = _mm_aeskeygenassist_si128(round_key, ROUND_CONSTANTS[8] as i32);
+        input_data = _mm_aesenc_si128(input_data, round_key);
+
+        // Final round (without MixColumns)
+        input_data = _mm_aesenclast_si128(
+            input_data,
+            _mm_aeskeygenassist_si128(round_key, ROUND_CONSTANTS[9] as i32),
+        );
+
+        _mm_storeu_si128(output.as_ptr() as *mut __m128i, input_data)
+    }
+    output.to_vec();
+
+    vec![]
+}
+
+pub fn aes_192_decrypt(input_data: &Vec<u8>, key: [u8; AES_192_KEY]) -> Vec<u8> {
     let mut output = Vec::with_capacity(input_data.len());
 
     let round_keys = expand_key_192(&key);
@@ -158,28 +250,28 @@ pub fn aes_192_decrypt(input_data: &Vec<u8>, key: [u8; AES_192_KEY]) -> (Vec<u8>
     for chunk in input_data.chunks(AES_BLOCK_SIZE) {
         let mut state = initialize_state(&mut chunk.to_vec());
 
-        add_round_key(&mut state, &round_keys[NUM_ROUNDS_192], AES_192_KEY);
+        add_round_key(&mut state, &round_keys[NUM_ROUNDS_192]);
 
         for round in (1..NUM_ROUNDS_192).rev() {
             inv_shift_rows(&mut state);
             inv_sub_bytes(&mut state);
-            add_round_key(&mut state, &round_keys[round], AES_192_KEY);
+            add_round_key(&mut state, &round_keys[round]);
             inv_mix_columns(&mut state);
         }
 
         inv_shift_rows(&mut state);
         inv_sub_bytes(&mut state);
-        add_round_key(&mut state, &round_keys[0], AES_192_KEY);
+        add_round_key(&mut state, &round_keys[0]);
 
         for i in 0..4 {
             output.extend_from_slice(&state[i]);
         }
     }
 
-    (output, None)
+    output
 }
 
-pub fn aes_256_encrypt(input_data: &Vec<u8>, key: [u8; AES_256_KEY]) -> (Vec<u8>, Option<Vec<u8>>) {
+pub fn aes_256_encrypt(input_data: &Vec<u8>, key: [u8; AES_256_KEY]) -> Vec<u8> {
     let mut output = Vec::with_capacity(input_data.len());
 
     let round_keys = expand_key_256(&key);
@@ -187,28 +279,28 @@ pub fn aes_256_encrypt(input_data: &Vec<u8>, key: [u8; AES_256_KEY]) -> (Vec<u8>
     for chunk in input_data.chunks(AES_BLOCK_SIZE) {
         let mut state = initialize_state(&mut chunk.to_vec());
 
-        add_round_key(&mut state, &round_keys[0], AES_256_KEY);
+        add_round_key(&mut state, &round_keys[0]);
 
         for round in 1..NUM_ROUNDS_256 {
             sub_bytes(&mut state);
             shift_rows(&mut state);
             mix_columns(&mut state);
-            add_round_key(&mut state, &round_keys[round], AES_256_KEY);
+            add_round_key(&mut state, &round_keys[round]);
         }
 
         sub_bytes(&mut state);
         shift_rows(&mut state);
-        add_round_key(&mut state, &round_keys[NUM_ROUNDS_256], AES_256_KEY);
+        add_round_key(&mut state, &round_keys[NUM_ROUNDS_256]);
 
         for i in 0..4 {
             output.extend_from_slice(&state[i]);
         }
     }
 
-    (output, None)
+    output
 }
 
-pub fn aes_256_decrypt(input_data: &Vec<u8>, key: [u8; AES_256_KEY]) -> (Vec<u8>, Option<Vec<u8>>) {
+pub fn aes_256_decrypt(input_data: &Vec<u8>, key: [u8; AES_256_KEY]) -> Vec<u8> {
     let mut output = Vec::with_capacity(input_data.len());
 
     let round_keys = expand_key_256(&key);
@@ -216,37 +308,36 @@ pub fn aes_256_decrypt(input_data: &Vec<u8>, key: [u8; AES_256_KEY]) -> (Vec<u8>
     for chunk in input_data.chunks(AES_BLOCK_SIZE) {
         let mut state = initialize_state(&mut chunk.to_vec());
 
-        add_round_key(&mut state, &round_keys[NUM_ROUNDS_256], AES_256_KEY);
+        add_round_key(&mut state, &round_keys[NUM_ROUNDS_256]);
 
         for round in (1..NUM_ROUNDS_256).rev() {
             inv_shift_rows(&mut state);
             inv_sub_bytes(&mut state);
-            add_round_key(&mut state, &round_keys[round], AES_256_KEY);
+            add_round_key(&mut state, &round_keys[round]);
             inv_mix_columns(&mut state);
         }
 
         inv_shift_rows(&mut state);
         inv_sub_bytes(&mut state);
-        add_round_key(&mut state, &round_keys[0], AES_256_KEY);
+        add_round_key(&mut state, &round_keys[0]);
 
         for i in 0..4 {
             output.extend_from_slice(&state[i]);
         }
     }
 
-    (output, None)
+    output
 }
 
 #[inline(always)]
 fn initialize_state(input_data: &[u8]) -> [[u8; 4]; 4] {
+    assert_eq!(input_data.len(), 16, "NOT 16!!!");
+
     let mut state: [[u8; 4]; 4] = Default::default();
 
-    for col in 0..4 {
-        for row in 0..4 {
-            state[row][col] = input_data[col * 4 + row];
-        }
+    for (i, &byte) in input_data.iter().enumerate() {
+        state[i % 4][i / 4] = byte;
     }
-
     state
 }
 
@@ -292,163 +383,64 @@ fn expand_key(key_size: usize, original_key: &[u8]) -> Vec<Vec<u8>> {
     round_keys.chunks(16).map(|chunk| chunk.to_vec()).collect()
 }
 
-#[inline(always)]
 fn expand_key_192(original_key: &[u8; 24]) -> Vec<[u8; 16]> {
-    let mut round_keys: Vec<[u8; 16]> = Vec::new();
+    let mut round_keys = vec![[0u8; 16]; 13]; // AES-192 requires 13 keys
+    round_keys[0][..16].copy_from_slice(&original_key[0..16]);
+    round_keys[1][..8].copy_from_slice(&original_key[16..24]);
 
-    // Initial round keys
-    round_keys.push([
-        original_key[0],
-        original_key[1],
-        original_key[2],
-        original_key[3],
-        original_key[4],
-        original_key[5],
-        original_key[6],
-        original_key[7],
-        original_key[8],
-        original_key[9],
-        original_key[10],
-        original_key[11],
-        original_key[12],
-        original_key[13],
-        original_key[14],
-        original_key[15],
-    ]);
-
-    round_keys.push([
-        original_key[16],
-        original_key[17],
-        original_key[18],
-        original_key[19],
-        original_key[20],
-        original_key[21],
-        original_key[22],
-        original_key[23],
-        original_key[0],
-        original_key[1],
-        original_key[2],
-        original_key[3],
-        original_key[4],
-        original_key[5],
-        original_key[6],
-        original_key[7],
-    ]);
-
-    round_keys.push([
-        original_key[8],
-        original_key[9],
-        original_key[10],
-        original_key[11],
-        original_key[12],
-        original_key[13],
-        original_key[14],
-        original_key[15],
-        original_key[16],
-        original_key[17],
-        original_key[18],
-        original_key[19],
-        original_key[20],
-        original_key[21],
-        original_key[22],
-        original_key[23],
-    ]);
-
-    // Perform key expansion for rounds 1 to 11
-    for round in 1..12 {
-        let mut temp = round_keys[round].clone();
-
-        // Rotate left
+    for round in 2..13 {
+        let mut temp = round_keys[round - 1];
         temp.rotate_left(4);
 
-        // Substitute bytes using S-Box
         for byte in temp.iter_mut() {
             *byte = S_BOX[*byte as usize];
         }
+        temp[0] ^= ROUND_CONSTANTS[round - 1];
 
-        // XOR with round constant
-        temp[0] ^= ROUND_CONSTANTS[round];
-
-        // XOR with previous round key
         for i in 0..4 {
-            temp[i] ^= round_keys[round - 1][i];
+            temp[i] ^= round_keys[round - 2][i];
         }
-
-        // Update round keys
-        round_keys.push(temp);
+        round_keys[round] = temp;
     }
 
     round_keys
 }
 
-fn expand_key_256_a(original_key: &[u8; 32]) -> Vec<[u8; 16]> {
-    let mut round_keys: Vec<[u8; 16]> = Vec::new();
+/* #[inline(always)]
+fn expand_key_192(original_key: &[u8; 24]) -> Vec<[u8; 16]> {
+    let mut round_keys: Vec<[u8; 16]> = Vec::with_capacity(13);
 
-    // Initial round keys
-    round_keys.push([
-        original_key[0],
-        original_key[1],
-        original_key[2],
-        original_key[3],
-        original_key[4],
-        original_key[5],
-        original_key[6],
-        original_key[7],
-        original_key[8],
-        original_key[9],
-        original_key[10],
-        original_key[11],
-        original_key[12],
-        original_key[13],
-        original_key[14],
-        original_key[15],
-    ]);
+    // Copy initial key segments into round keys
+    let mut current_key = [0u8; 16];
+    current_key.copy_from_slice(&original_key[..16]);
+    round_keys.push(current_key);
 
-    round_keys.push([
-        original_key[16],
-        original_key[17],
-        original_key[18],
-        original_key[19],
-        original_key[20],
-        original_key[21],
-        original_key[22],
-        original_key[23],
-        original_key[24],
-        original_key[25],
-        original_key[26],
-        original_key[27],
-        original_key[28],
-        original_key[29],
-        original_key[30],
-        original_key[31],
-    ]);
+    current_key.copy_from_slice(&original_key[8..24]);
+    round_keys.push(current_key);
 
-    // Perform key expansion for rounds 1 to 13
-    for round in 1..14 {
-        let mut temp = round_keys[round].clone();
+    // Start expanding keys for AES-192
+    for round in 2..13 {
+        let mut temp = round_keys[round - 1].clone();
 
-        // Rotate left
+        // Rotate and substitute bytes for the first word
         temp.rotate_left(4);
-
-        // Substitute bytes using S-Box
         for byte in temp.iter_mut() {
             *byte = S_BOX[*byte as usize];
         }
 
         // XOR with round constant
-        temp[0] ^= ROUND_CONSTANTS[round];
+        temp[0] ^= ROUND_CONSTANTS[round - 1];
 
-        // XOR with previous round key
-        for i in 0..4 {
-            temp[i] ^= round_keys[round - 1][i];
+        // Generate the new round key by XORing with previous round keys
+        for i in 0..16 {
+            temp[i] ^= round_keys[round - 2][i];
         }
 
-        // Update round keys
         round_keys.push(temp);
     }
 
     round_keys
-}
+} */
 
 /// Key expansion function for AES-256
 #[inline(always)]
@@ -486,12 +478,12 @@ fn sub_bytes(state: &mut [[u8; 4]; 4]) {
     }
 }
 
-#[inline(always)]
+/* #[inline(always)]
 fn s_bytes(state: &mut [u8; 16]) {
     for i in 0..16 {
         state[i] = S_BOX[state[i] as usize];
     }
-}
+} */
 
 /// Shifts the rows of the state array.
 #[inline(always)]
@@ -527,36 +519,15 @@ fn mix_columns(state: &mut [[u8; 4]; 4]) {
     }
 }
 
-#[inline(always)]
-fn add_round_key(state: &mut [[u8; 4]; 4], round_key: &[u8], key_size: usize) {
-    for i in 0..4 {
-        for j in 0..4 {
-            state[j][i] ^= round_key[i * 4 + j];
+fn add_round_key(state: &mut [[u8; 4]; 4], round_key: &[u8]) {
+    // AES typically operates with a 4x4 state array for 128-bit blocks
+    for col in 0..4 {
+        for row in 0..4 {
+            let index = col * 4 + row;
+            state[row][col] ^= round_key[index];
         }
     }
 }
-
-#[inline(always)]
-fn add_round_key_192(state: &mut [[u8; 4]; 4], round_key: &[u8], key_size: usize) {
-    for i in 0..4 {
-        for j in 0..4 {
-            state[j][i] ^= round_key[i * 4 + j];
-        }
-    }
-}
-
-#[inline(always)]
-fn add_round_key_256(state: &mut [[u8; 4]; 4], round_key: &[u8], key_size: usize) {
-    for i in 0..4 {
-        for j in 0..4 {
-            state[j][i] ^= round_key[i * 4 + j];
-        }
-    }
-}
-
-//
-
-//
 
 /// Substitutes each byte in the state with its corresponding value from the inverse S-box.
 fn inv_sub_bytes(state: &mut [[u8; 4]; 4]) {
@@ -589,7 +560,7 @@ fn inv_mix_columns(state: &mut [[u8; 4]; 4]) {
     }
 }
 
-/// Multiplies a number in the finite field of AES (Galois Field 2^8) by its multiplicative inverse.
+/* /// Multiplies a number in the finite field of AES (Galois Field 2^8) by its multiplicative inverse.
 fn inv_mul(a: u8, b: u8) -> u8 {
     let mut result = 0;
 
@@ -612,32 +583,7 @@ fn inv_mul(a: u8, b: u8) -> u8 {
     }
 
     result
-}
-
-fn pad_pkcs7(input_data: &mut Vec<u8>, block_size: usize) {
-    let padding_len = block_size - (input_data.len() % block_size);
-    input_data.extend(vec![padding_len as u8; padding_len]);
-}
-
-fn u8_array_to_u64(array: &[u8]) -> u64 {
-    let mut result: u64 = 0;
-
-    for &byte in array {
-        result = (result << 8) | u64::from(byte);
-    }
-
-    result
-}
-
-fn u64_to_u8_array(value: u64) -> [u8; 8] {
-    let mut result = [0u8; 8];
-
-    for i in (0..8).rev() {
-        result[i] = (value >> (8 * (7 - i))) as u8;
-    }
-
-    result
-}
+} */
 
 /// The inverse S-box substitution values for AES-128 decryption.
 const INV_S_BOX: [u8; 256] = [
@@ -680,8 +626,9 @@ const S_BOX: [u8; 256] = [
 ];
 
 /// The round constants used in the key schedule of AES-128 encryption.
-const ROUND_CONSTANTS: [u8; NUM_ROUNDS_128] =
-    [0x01, 0x02, 0x04, 0x08, 0x10, 0x20, 0x40, 0x80, 0x1b, 0x36];
+const ROUND_CONSTANTS: [u8; NUM_ROUNDS_256] = [
+    0x01, 0x02, 0x04, 0x08, 0x10, 0x20, 0x40, 0x80, 0x1b, 0x36, 0x6c, 0xd8, 0xab, 0x4d,
+];
 
 const LTABLE: [u8; 256] = [
     0x00, 0xff, 0xc8, 0x08, 0x91, 0x10, 0xd0, 0x36, 0x5a, 0x3e, 0xd8, 0x43, 0x99, 0x77, 0xfe, 0x18,
