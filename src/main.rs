@@ -549,7 +549,7 @@ fn process(
             break;
         }
 
-        let input_data = buffer[..size].to_vec();
+        let mut input_data = buffer[..size].to_vec();
         let chunk_keys = Arc::clone(&keys);
         let output = Arc::clone(&output_file);
         let task_count = Arc::clone(&tasks_count);
@@ -557,7 +557,7 @@ fn process(
         let is_last_chunk = size < buffer_size as usize;
 
         // Padding size and padded flag
-        let (padding_size, padded) = if action == Action::Encrypt && is_last_chunk {
+        let (mut padding_size, padded) = if action == Action::Encrypt && is_last_chunk {
             let padding = 16 - (size % 16);
             if padding != 16 {
                 (padding, true)
@@ -582,15 +582,19 @@ fn process(
                     Algorithm::Aes192 => aes_192(implem, action, padded_data, chunk_keys.key192),
                     Algorithm::Aes256 => aes_256(implem, action, padded_data, chunk_keys.key256),
                 };
-            } else {
+            } else {                
+                if is_last_chunk{
+                    padding_size = input_data.pop().unwrap_or(0) as usize;
+                }
+                
                 chunk_result = match algorithm {
                     Algorithm::Aes128 => aes_128(implem, action, input_data.clone(), chunk_keys.key128),
                     Algorithm::Aes192 => aes_192(implem, action, input_data.clone(), chunk_keys.key192),
                     Algorithm::Aes256 => aes_256(implem, action, input_data.clone(), chunk_keys.key256),
                 };
 
-                if action == Action::Decrypt && is_last_chunk {
-                    let padding_size = *chunk_result.last().unwrap_or(&0) as usize;
+                if is_last_chunk {
+                    // let padding_size = *chunk_result.last().unwrap_or(&0) as usize;
                     chunk_result.truncate(chunk_result.len() - padding_size);
                 }
             }
@@ -604,7 +608,7 @@ fn process(
             file.seek(SeekFrom::Start((current_index * buffer_size) as u64))
                 .expect("Failed to seek in output file");
             file.write_all(&chunk_result).expect("Failed to write to output file");
-
+            
             task_count.fetch_sub(1, Ordering::SeqCst);
         });
 
@@ -758,3 +762,75 @@ fn supports_aes_ni() -> bool {
 
     false
 }
+
+
+
+#[test]
+fn test_aes_encryption_decryption() {
+    // Define test parameters
+    let original_content = b"Hello, this is a test for AES encryption and decryption!!!!!!!!!";
+    let buffer_size = 4 * 1024;
+    let num_threads = 4;
+
+    // Paths for temporary files
+    let input_file_path = "test_input.bin";
+    let encrypted_file_path = "test_encrypted.bin";
+    let decrypted_file_path = "test_decrypted.bin";
+
+    let mut input_file = File::create(input_file_path).expect("Failed to create input file");
+    input_file.write_all(original_content).expect("Failed to write test content to input file");
+    
+    // Encryption keys and algorithm configuration
+    let keys = KeysArr {
+        key128: [1; 16],
+        key192: [1; 24],
+        key256: [1; 32],
+    };
+
+    // Encrypt the file
+    let encrypt_duration = process(
+        input_file_path.to_string(),
+        encrypted_file_path.to_string(),
+        Algorithm::Aes128,
+        Action::Encrypt,
+        Implementation::Hardware, 
+        keys.clone(),
+        num_threads,
+        buffer_size,
+    );
+    println!("Encryption completed in {:?}", encrypt_duration);
+
+    let mut encrypted_file= File::open(encrypted_file_path).expect("not open");
+    let mut encrypted_content = Vec::new();
+    encrypted_file.read_to_end(&mut encrypted_content).expect("awaawaw");
+    dbg!(encrypted_content.len());
+
+    // Decrypt the file
+    let decrypt_duration = process(
+        encrypted_file_path.to_string(),
+        decrypted_file_path.to_string(),
+        Algorithm::Aes128,
+        Action::Decrypt,
+        Implementation::Hardware,
+        keys.clone(),
+        num_threads,
+        buffer_size,
+    );
+    println!("Decryption completed in {:?}", decrypt_duration);
+
+    // Verify the decrypted content matches the original content
+    let mut decrypted_file = File::open(decrypted_file_path).expect("Failed to open decrypted file");
+    let mut decrypted_content = Vec::new();
+    decrypted_file.read_to_end(&mut decrypted_content).expect("Failed to read decrypted file");
+
+    dbg!(original_content.len());
+    dbg!(decrypted_content.len());
+
+    assert_eq!(original_content, decrypted_content.as_slice(), "Decrypted content does not match original content");
+
+    // Cleanup temporary files
+    std::fs::remove_file(input_file_path).expect("Failed to delete input file");
+    std::fs::remove_file(encrypted_file_path).expect("Failed to delete encrypted file");
+    std::fs::remove_file(decrypted_file_path).expect("Failed to delete decrypted file");
+}
+

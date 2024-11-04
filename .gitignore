@@ -11,3 +11,7 @@ AES_Simple_x64_2019.exe
 VBinDiff.exe
 labs_ukr.pdf
 encrypted/ehorov.bin
+test_decrypted.bin
+src/main.rs
+test_encrypted.bin
+test_input.bin

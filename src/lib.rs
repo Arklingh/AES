@@ -49,7 +49,7 @@ pub fn aes_ni_128_encrypt(input_data: &Vec<u8>, key: [u8; AES_128_KEY]) -> Vec<u
 
     unsafe {
         let mut input_data = _mm_loadu_si128(input_data.as_slice().as_ptr() as *const __m128i);
-        let mut round_key = _mm_loadu_si128(key.as_ptr() as *const __m128i);
+        let mut round_key = _mm_loadu_si128(key.as_ptr() as *const __m128i); // ?!, maybe wrong format of key, maybe not
 
         input_data = _mm_xor_si128(input_data, round_key);
 
@@ -86,9 +86,9 @@ pub fn aes_ni_128_encrypt(input_data: &Vec<u8>, key: [u8; AES_128_KEY]) -> Vec<u
             _mm_aeskeygenassist_si128(round_key, ROUND_CONSTANTS[9] as i32),
         );
 
-        _mm_storeu_si128(output.as_ptr() as *mut __m128i, input_data)
+        // _mm_storeu_si128(output.as_ptr() as *mut __m128i, input_data)
     }
-    output.to_vec()
+    input_data.to_vec()
 }
 
 #[inline(always)]
@@ -331,8 +331,6 @@ pub fn aes_256_decrypt(input_data: &Vec<u8>, key: [u8; AES_256_KEY]) -> Vec<u8> 
 
 #[inline(always)]
 fn initialize_state(input_data: &[u8]) -> [[u8; 4]; 4] {
-    assert_eq!(input_data.len(), 16, "NOT 16!!!");
-
     let mut state: [[u8; 4]; 4] = Default::default();
 
     for (i, &byte) in input_data.iter().enumerate() {
