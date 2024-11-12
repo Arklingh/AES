@@ -594,7 +594,6 @@ fn process(
                 };
 
                 if is_last_chunk {
-                    // let padding_size = *chunk_result.last().unwrap_or(&0) as usize;
                     chunk_result.truncate(chunk_result.len() - padding_size);
                 }
             }
