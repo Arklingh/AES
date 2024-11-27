@@ -14,3 +14,8 @@ encrypted/ehorov.bin
 test_decrypted.bin
 test_encrypted.bin
 test_input.bin
+encryption_time_plot.png
+input/1GB.bin
+input/new output.txt
+input/output.txt
+output.txt

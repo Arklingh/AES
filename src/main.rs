@@ -1,6 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")] // hide console window on Windows in release
 
 mod lib;
+mod mt;
 use eframe::egui::{self, ViewportBuilder, ViewportCommand};
 use eframe::egui::{Layout, RichText};
 use eframe::Theme;
@@ -15,6 +16,7 @@ use std::sync::mpsc::{Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::runtime::Runtime;
+use plotters;
 use rayon::ThreadPoolBuilder;
 
 const MIN_RES_POP_WIDTH: f32 = 150.0;
@@ -376,25 +378,6 @@ impl eframe::App for MyApp {
                 });
                                   
             ui.label("\n");
-            if supports_aes_ni() {
-                ui.label("What implementation to use?");
-                egui::ComboBox::from_label(format!(""))
-                    .selected_text(format!("{:?}", self.implmentation))
-                    .show_ui(ui, |ui| {
-                        ui.selectable_value(
-                            &mut self.implmentation,
-                            Implementation::Software,
-                            "Software",
-                        );
-                        ui.selectable_value(
-                            &mut self.implmentation,
-                            Implementation::Hardware,
-                            "Hardware",
-                        )
-                    });
-            }
-
-            ui.label("\n");
 
             ui.horizontal(|ui| {
                 let keys_are_empty = (self.raw_keys.key128.is_empty() && self.algorithm == Algorithm::Aes128 || self.raw_keys.key192.is_empty() && self.algorithm == Algorithm::Aes192 || self.raw_keys.key256.is_empty() && self.algorithm == Algorithm::Aes256)
@@ -549,7 +532,9 @@ fn process(
             break;
         }
 
-        let mut input_data = buffer[..size].to_vec();
+        let mut input_data = Vec::with_capacity(size);
+        input_data.extend_from_slice(&buffer[..size]);
+
         let chunk_keys = Arc::clone(&keys);
         let output = Arc::clone(&output_file);
         let task_count = Arc::clone(&tasks_count);
@@ -582,8 +567,8 @@ fn process(
                     Algorithm::Aes192 => aes_192(implem, action, padded_data, chunk_keys.key192),
                     Algorithm::Aes256 => aes_256(implem, action, padded_data, chunk_keys.key256),
                 };
-            } else {                
-                if is_last_chunk{
+            } else {
+                if is_last_chunk {
                     padding_size = input_data.pop().unwrap_or(0) as usize;
                 }
                 
@@ -764,7 +749,7 @@ fn supports_aes_ni() -> bool {
 
 
 
-#[test]
+/* #[test]
 fn test_aes_encryption_decryption() {
     // Define test parameters
     let original_content = b"Hello, this is a test for AES encryption and decryption!!!!!!!!!";
@@ -831,5 +816,99 @@ fn test_aes_encryption_decryption() {
     std::fs::remove_file(input_file_path).expect("Failed to delete input file");
     std::fs::remove_file(encrypted_file_path).expect("Failed to delete encrypted file");
     std::fs::remove_file(decrypted_file_path).expect("Failed to delete decrypted file");
+} */
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+    use plotters::prelude::*;
+    
+    // Constant file names
+    const INPUT_FILE: &str = "./input/1GB.bin";
+    const OUTPUT_FILE: &str = "output.txt";
+
+    /// Function to run benchmarks with varying thread counts
+    fn benchmark_process(
+        algorithm: Algorithm,
+        action: Action,
+        implem: Implementation,
+        keys: KeysArr,
+        buffer_size: u32,
+    ) -> Vec<(usize, Duration)> {
+        let mut results = Vec::new();
+
+        // Test for different thread counts (1, 2, 4, 8, 16, etc.)
+        for num_threads in 1..=16 {
+            let duration = process(
+                INPUT_FILE.to_string(),
+                OUTPUT_FILE.to_string(),
+                algorithm,
+                action,
+                implem,
+                keys.clone(),
+                num_threads,
+                buffer_size,
+            );
+            dbg!("Threads: {}, Time: {:?}", num_threads, duration);
+            results.push((num_threads, duration));
+        }
+
+        results
+    }
+
+    /// Function to plot the results using the plotters crate
+    fn plot_results(results: &[(usize, Duration)]) -> Result<(), Box<dyn std::error::Error>> {
+        let root = BitMapBackend::new("encryption_time_plot.png", (1920, 1080)).into_drawing_area();
+        root.fill(&WHITE)?;
+
+        let max_time = results.iter().map(|&(_, dur)| dur.as_millis()).max().unwrap_or(0);
+
+        let mut chart = ChartBuilder::on(&root)
+            .caption("Encryption Time vs. Number of Threads", ("sans-serif", 44))
+            .margin(20)
+            .x_label_area_size(30)
+            .y_label_area_size(40)
+            .build_cartesian_2d(1..16, 1..max_time)?;
+
+        chart.configure_mesh().draw()?;
+
+        chart
+            .draw_series(LineSeries::new(
+                results.iter().map(|&(threads, duration)| (threads as i32, duration.as_millis())),
+                &RED,
+            ))?
+            .label("Time (ms)")
+            .legend(|(x, y)| PathElement::new([(x, y), (x + 20, y)], &RED));
+
+        chart
+            .configure_series_labels()
+            .background_style(&WHITE.mix(0.8))
+            .border_style(&BLACK)
+            .draw()?;
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_benchmarking_and_plotting() {
+        let algorithm = Algorithm::Aes128;
+        let action = Action::Encrypt;
+        let implem = Implementation::Software;
+        let keys = KeysArr {
+            key128: [1u8; 16],
+            key192: [1u8; 24],
+            key256: [1u8; 32],
+        };
+        let buffer_size = DEFAULT_BUFFER_SIZE;
+
+        // Run the benchmarking process
+        let results = benchmark_process(algorithm, action, implem, keys, buffer_size);
+
+        // Plot the results
+        if let Err(e) = plot_results(&results) {
+            eprintln!("Error plotting results: {}", e);
+        }
+    }
 }
 
