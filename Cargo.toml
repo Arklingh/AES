@@ -15,7 +15,8 @@ rayon = "1.8.0"
 cfg-if = "1.0"
 num_cpus = "1.16.0"
 plotters = "0.3.7"
-windows = "0.58.*"
+windows = { version = "0.58.*", features = ["Win32_System_Threading"]}
+aes = "0.8.4"
 
 # [profile.release]
 # lto = "fat"

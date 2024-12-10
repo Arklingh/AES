@@ -3,6 +3,10 @@ use std::arch::x86_64::{
     _mm_aeskeygenassist_si128, _mm_loadu_si128, _mm_storeu_si128, _mm_xor_si128,
 };
 
+use aes::cipher::generic_array::GenericArray;
+use aes::cipher::{BlockDecrypt, BlockEncrypt, KeyInit};
+use aes::{Aes128, Aes192, Aes256};
+
 /// The block size in bytes for AES.
 const AES_BLOCK_SIZE: usize = 16;
 
@@ -14,31 +18,79 @@ const AES_128_KEY: usize = 16;
 const AES_192_KEY: usize = 24;
 const AES_256_KEY: usize = 32;
 
-#[inline(always)]
-pub fn aes_128_encrypt(input_data: &Vec<u8>, key: [u8; AES_128_KEY]) -> Vec<u8> {
+pub fn aes_128_encrypt(input_data: &Vec<u8>, key: [u8; 16]) -> Vec<u8> {
+    let cipher = Aes128::new(&GenericArray::from_slice(&key));
     let mut output = Vec::with_capacity(input_data.len());
 
-    let round_keys = expand_key(128, &key);
+    for chunk in input_data.chunks(16) {
+        let mut block = GenericArray::clone_from_slice(chunk);
+        cipher.encrypt_block(&mut block);
+        output.extend_from_slice(&block);
+    }
 
-    for chunk in input_data.chunks(AES_BLOCK_SIZE) {
-        let mut state = initialize_state(&mut chunk.to_vec());
+    output
+}
 
-        add_round_key(&mut state, &round_keys[0]);
+pub fn aes_192_encrypt(input_data: &Vec<u8>, key: [u8; 24]) -> Vec<u8> {
+    let cipher = Aes192::new(&GenericArray::from_slice(&key));
+    let mut output = Vec::with_capacity(input_data.len());
 
-        for round in 1..NUM_ROUNDS_128 {
-            sub_bytes(&mut state);
-            shift_rows(&mut state);
-            mix_columns(&mut state);
-            add_round_key(&mut state, &round_keys[round]);
-        }
+    for chunk in input_data.chunks(16) {
+        let mut block = GenericArray::clone_from_slice(chunk);
+        cipher.encrypt_block(&mut block);
+        output.extend_from_slice(&block);
+    }
 
-        sub_bytes(&mut state);
-        shift_rows(&mut state);
-        add_round_key(&mut state, &round_keys[NUM_ROUNDS_128]);
+    output
+}
 
-        for i in 0..4 {
-            output.extend_from_slice(&state[i]);
-        }
+pub fn aes_256_encrypt(input_data: &Vec<u8>, key: [u8; 32]) -> Vec<u8> {
+    let cipher = Aes256::new(&GenericArray::from_slice(&key));
+    let mut output = Vec::with_capacity(input_data.len());
+
+    for chunk in input_data.chunks(16) {
+        let mut block = GenericArray::clone_from_slice(chunk);
+        cipher.encrypt_block(&mut block);
+        output.extend_from_slice(&block);
+    }
+
+    output
+}
+
+pub fn aes_128_decrypt(input_data: &Vec<u8>, key: [u8; 16]) -> Vec<u8> {
+    let cipher = Aes128::new(&GenericArray::from_slice(&key));
+    let mut output = Vec::with_capacity(input_data.len());
+
+    for chunk in input_data.chunks(16) {
+        let mut block = GenericArray::clone_from_slice(chunk);
+        cipher.decrypt_block(&mut block);
+        output.extend_from_slice(&block);
+    }
+
+    output
+}
+
+pub fn aes_192_decrypt(input_data: &Vec<u8>, key: [u8; 24]) -> Vec<u8> {
+    let cipher = Aes192::new(&GenericArray::from_slice(&key));
+    let mut output = Vec::with_capacity(input_data.len());
+
+    for chunk in input_data.chunks(16) {
+        let mut block = GenericArray::clone_from_slice(chunk);
+        cipher.decrypt_block(&mut block);
+        output.extend_from_slice(&block);
+    }
+
+    output
+}
+
+pub fn aes_256_decrypt(input_data: &Vec<u8>, key: [u8; 32]) -> Vec<u8> {
+    let cipher = Aes256::new(&GenericArray::from_slice(&key));
+    let mut output = Vec::with_capacity(input_data.len());
+
+    for chunk in input_data.chunks(16) {
+        let mut block = GenericArray::clone_from_slice(chunk);
+        cipher.decrypt_block(&mut block);
+        output.extend_from_slice(&block);
     }
 
     output
@@ -91,7 +143,7 @@ pub fn aes_ni_128_encrypt(input_data: &Vec<u8>, key: [u8; AES_128_KEY]) -> Vec<u
     input_data.to_vec()
 }
 
-#[inline(always)]
+/* #[inline(always)]
 pub fn aes_128_decrypt(input_data: &Vec<u8>, key: [u8; AES_128_KEY]) -> Vec<u8> {
     let mut output = Vec::with_capacity(input_data.len());
 
@@ -119,7 +171,7 @@ pub fn aes_128_decrypt(input_data: &Vec<u8>, key: [u8; AES_128_KEY]) -> Vec<u8> 
     }
 
     output
-}
+} */
 
 pub fn aes_ni_128_decrypt(input_data: &Vec<u8>, key: [u8; AES_128_KEY]) -> Vec<u8> {
     unsafe {
@@ -164,7 +216,7 @@ pub fn aes_ni_128_decrypt(input_data: &Vec<u8>, key: [u8; AES_128_KEY]) -> Vec<u
     input_data.to_vec()
 }
 
-pub fn aes_192_encrypt(input_data: &Vec<u8>, key: [u8; AES_192_KEY]) -> Vec<u8> {
+/* pub fn aes_192_encrypt(input_data: &Vec<u8>, key: [u8; AES_192_KEY]) -> Vec<u8> {
     let mut output = Vec::with_capacity(input_data.len());
 
     let round_keys = expand_key_192(&key);
@@ -191,7 +243,7 @@ pub fn aes_192_encrypt(input_data: &Vec<u8>, key: [u8; AES_192_KEY]) -> Vec<u8> 
     }
 
     output
-}
+} */
 
 pub fn aes_ni_192_encrypt(input_data: &Vec<u8>, key: [u8; AES_192_KEY]) -> Vec<u8> {
     let output: Vec<u8> = Vec::with_capacity(16);
@@ -242,7 +294,7 @@ pub fn aes_ni_192_encrypt(input_data: &Vec<u8>, key: [u8; AES_192_KEY]) -> Vec<u
     vec![]
 }
 
-pub fn aes_192_decrypt(input_data: &Vec<u8>, key: [u8; AES_192_KEY]) -> Vec<u8> {
+/* pub fn aes_192_decrypt(input_data: &Vec<u8>, key: [u8; AES_192_KEY]) -> Vec<u8> {
     let mut output = Vec::with_capacity(input_data.len());
 
     let round_keys = expand_key_192(&key);
@@ -269,9 +321,9 @@ pub fn aes_192_decrypt(input_data: &Vec<u8>, key: [u8; AES_192_KEY]) -> Vec<u8> 
     }
 
     output
-}
+} */
 
-pub fn aes_256_encrypt(input_data: &Vec<u8>, key: [u8; AES_256_KEY]) -> Vec<u8> {
+/* pub fn aes_256_encrypt(input_data: &Vec<u8>, key: [u8; AES_256_KEY]) -> Vec<u8> {
     let mut output = Vec::with_capacity(input_data.len());
 
     let round_keys = expand_key_256(&key);
@@ -298,9 +350,9 @@ pub fn aes_256_encrypt(input_data: &Vec<u8>, key: [u8; AES_256_KEY]) -> Vec<u8> 
     }
 
     output
-}
+} */
 
-pub fn aes_256_decrypt(input_data: &Vec<u8>, key: [u8; AES_256_KEY]) -> Vec<u8> {
+/* pub fn aes_256_decrypt(input_data: &Vec<u8>, key: [u8; AES_256_KEY]) -> Vec<u8> {
     let mut output = Vec::with_capacity(input_data.len());
 
     let round_keys = expand_key_256(&key);
@@ -327,7 +379,7 @@ pub fn aes_256_decrypt(input_data: &Vec<u8>, key: [u8; AES_256_KEY]) -> Vec<u8> 
     }
 
     output
-}
+} */
 
 #[inline(always)]
 fn initialize_state(input_data: &[u8]) -> [[u8; 4]; 4] {

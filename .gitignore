@@ -19,3 +19,6 @@ input/1GB.bin
 input/new output.txt
 input/output.txt
 output.txt
+decrypted/win.txt
+encrypted/win.txt
+input/new_output.txt

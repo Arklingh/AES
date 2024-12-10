@@ -1,7 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")] // hide console window on Windows in release
 
 mod lib;
-mod mt;
 use eframe::egui::{self, ViewportBuilder, ViewportCommand};
 use eframe::egui::{Layout, RichText};
 use eframe::Theme;
@@ -16,7 +15,6 @@ use std::sync::mpsc::{Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::runtime::Runtime;
-use plotters;
 use rayon::ThreadPoolBuilder;
 
 const MIN_RES_POP_WIDTH: f32 = 150.0;
@@ -397,7 +395,6 @@ impl eframe::App for MyApp {
                         .shortcut_text("Ctrl+S"),
                 );
                 
-
                 ui.label("                                                                                                          ");
 
                 let exit_button_text = egui::RichText::new("Exit").size(15.0);
@@ -838,8 +835,7 @@ mod tests {
     ) -> Vec<(usize, Duration)> {
         let mut results = Vec::new();
 
-        // Test for different thread counts (1, 2, 4, 8, 16, etc.)
-        for num_threads in 1..=16 {
+        for num_threads in 1..16 {
             let duration = process(
                 INPUT_FILE.to_string(),
                 OUTPUT_FILE.to_string(),
@@ -869,7 +865,7 @@ mod tests {
             .margin(20)
             .x_label_area_size(30)
             .y_label_area_size(40)
-            .build_cartesian_2d(1..16, 1..max_time)?;
+            .build_cartesian_2d(1..15, 1..max_time)?;
 
         chart.configure_mesh().draw()?;
 
@@ -892,7 +888,7 @@ mod tests {
 
     #[test]
     fn test_benchmarking_and_plotting() {
-        let algorithm = Algorithm::Aes128;
+        let algorithm = Algorithm::Aes192;
         let action = Action::Encrypt;
         let implem = Implementation::Software;
         let keys = KeysArr {
