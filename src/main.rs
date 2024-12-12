@@ -6,7 +6,6 @@ use eframe::egui::{Layout, RichText};
 use eframe::Theme;
 use lib::*;
 use regex::Regex;
-use std::arch::is_x86_feature_detected;
 use std::fmt::Debug;
 use std::fs::{File, OpenOptions};
 use std::io::{BufReader, Read, Seek, SeekFrom, Write};
@@ -33,12 +32,13 @@ fn main() {
             maximize_button: Some(false),
             ..Default::default()
         },
+        hardware_acceleration: eframe::HardwareAcceleration::Preferred,
         default_theme: Theme::Dark,
         ..Default::default()
     };
 
     let _ = eframe::run_native(
-        "AES v.0.1.0",
+        "AES v.0.5.0",
         options,
         Box::new(|_cc| Box::<MyApp>::default()),
     );
@@ -345,9 +345,15 @@ impl eframe::App for MyApp {
             ui.label("");
 
             ui.label("Select a number of threads to be used");
+            let max_threads = num_cpus::get();
+            let thread_range = if max_threads > 1 {
+                1..=max_threads - 1
+            } else {
+                1..=1 
+            };
             ui.add(egui::Slider::new(
                 &mut self.num_threads,
-                1..=num_cpus::get() - 1,
+                thread_range,
             ));
 
             ui.label("Select buffer size(in KB):");
@@ -726,26 +732,6 @@ fn check_len(input: &String, algorithm: Algorithm) -> bool {
     }
 }
 
-fn supports_aes_ni() -> bool {
-    #[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
-    {
-        if is_x86_feature_detected!("aes") {
-            return true;
-        }
-    }
-
-    #[cfg(target_arch = "aarch64")]
-    {
-        if is_aarch64_feature_detected!("aes") {
-            return true;
-        }
-    }
-
-    false
-}
-
-
-
 /* #[test]
 fn test_aes_encryption_decryption() {
     // Define test parameters
@@ -863,6 +849,46 @@ mod tests {
         let mut chart = ChartBuilder::on(&root)
             .caption("Encryption Time vs. Number of Threads", ("sans-serif", 44))
             .margin(20)
+            .x_label_area_size(50)
+            .y_label_area_size(60)
+            .build_cartesian_2d(1..15, 1..max_time)?;
+
+        chart
+            .configure_mesh()
+            .x_desc("Number of Threads") 
+            .y_desc("Time (ms)")         
+            .axis_desc_style(("sans-serif", 20)) 
+            .label_style(("sans-serif", 16))     
+            .draw()?;
+
+        chart
+            .draw_series(LineSeries::new(
+                results.iter().map(|&(threads, duration)| (threads as i32, duration.as_millis())),
+                &RED,
+            ))?
+            .label("Time (ms)")
+            .legend(|(x, y)| PathElement::new([(x, y), (x + 20, y)], &RED));
+
+        chart
+            .configure_series_labels()
+            .background_style(&WHITE.mix(0.8))
+            .border_style(&BLACK)
+            .draw()?;
+
+        Ok(())
+    }
+    
+
+    /* /// Function to plot the results using the plotters crate
+    fn plot_results(results: &[(usize, Duration)]) -> Result<(), Box<dyn std::error::Error>> {
+        let root = BitMapBackend::new("encryption_time_plot.png", (1920, 1080)).into_drawing_area();
+        root.fill(&WHITE)?;
+
+        let max_time = results.iter().map(|&(_, dur)| dur.as_millis()).max().unwrap_or(0);
+
+        let mut chart = ChartBuilder::on(&root)
+            .caption("Encryption Time vs. Number of Threads", ("sans-serif", 44))
+            .margin(20)
             .x_label_area_size(30)
             .y_label_area_size(40)
             .build_cartesian_2d(1..15, 1..max_time)?;
@@ -884,7 +910,7 @@ mod tests {
             .draw()?;
 
         Ok(())
-    }
+    } */
 
     #[test]
     fn test_benchmarking_and_plotting() {
