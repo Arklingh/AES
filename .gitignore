@@ -22,3 +22,5 @@ output.txt
 decrypted/win.txt
 encrypted/win.txt
 input/new_output.txt
+encrypted/gig_test
+input/100MB-TESTFILE.ORG.pdf

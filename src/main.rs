@@ -32,8 +32,9 @@ fn main() {
             maximize_button: Some(false),
             ..Default::default()
         },
-        hardware_acceleration: eframe::HardwareAcceleration::Preferred,
+        // renderer: eframe::Renderer::Glow
         default_theme: Theme::Dark,
+        hardware_acceleration: eframe::HardwareAcceleration::Off,
         ..Default::default()
     };
 
@@ -359,7 +360,7 @@ impl eframe::App for MyApp {
             ui.label("Select buffer size(in KB):");
             let mut buffer_sizes = vec![];
             let mut size = 4 * 1024;
-            while size <= u32::MAX / 2 {
+            while size <= 4096 * 1024 {
                 buffer_sizes.push(size);
                 size *= 2;
             }
@@ -839,7 +840,46 @@ mod tests {
         results
     }
 
-    /// Function to plot the results using the plotters crate
+    fn plot_results(results: &[(usize, Duration)]) -> Result<(), Box<dyn std::error::Error>> {
+        let root = BitMapBackend::new("encryption_time_plot.png", (1920, 1080)).into_drawing_area();
+        root.fill(&WHITE)?;
+
+        let max_time = results.iter().map(|&(_, dur)| dur.as_millis()).max().unwrap_or(0);
+
+        let mut chart = ChartBuilder::on(&root)
+            .caption("Encryption Time vs. Number of Threads", ("sans-serif", 60)) // Збільшено розмір заголовка
+            .margin(20)
+            .x_label_area_size(80) // Збільшено розмір області для підпису осі X
+            .y_label_area_size(90) // Збільшено розмір області для підпису осі Y
+            .build_cartesian_2d(1..15, 1..max_time)?;
+
+        chart
+            .configure_mesh()
+            .x_desc("Number of Threads") 
+            .y_desc("Time (ms)")         
+            .axis_desc_style(("sans-serif", 28)) // Збільшено розмір підписів осей
+            .label_style(("sans-serif", 24))     // Збільшено розмір міток на осях
+            .draw()?;
+
+        chart
+            .draw_series(LineSeries::new(
+                results.iter().map(|&(threads, duration)| (threads as i32, duration.as_millis())),
+                &RED,
+            ))?
+            .label("Time (ms)")
+            .legend(|(x, y)| PathElement::new([(x, y), (x + 20, y)], &RED));
+
+        chart
+            .configure_series_labels()
+            .background_style(&WHITE.mix(0.8))
+            .border_style(&BLACK)
+            // .label_style(("sans-serif", 24)) // Збільшено розмір підписів серій
+            .draw()?;
+
+        Ok(())
+    }
+
+    /* /// Function to plot the results using the plotters crate
     fn plot_results(results: &[(usize, Duration)]) -> Result<(), Box<dyn std::error::Error>> {
         let root = BitMapBackend::new("encryption_time_plot.png", (1920, 1080)).into_drawing_area();
         root.fill(&WHITE)?;
@@ -876,7 +916,7 @@ mod tests {
             .draw()?;
 
         Ok(())
-    }
+    } */
     
 
     /* /// Function to plot the results using the plotters crate
