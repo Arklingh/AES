@@ -1,6 +1,6 @@
 [package]
 name = "AES"
-version = "0.5.0"
+version = "0.6.0"
 edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
@@ -9,7 +9,7 @@ edition = "2021"
 tokio = { version = "1", features = ["full"] }
 rfd = "0.11"
 regex = "1.5"
-eframe = "0.24.1"
+eframe = "0.24.1" 
 winit = "0.29.4"
 rayon = "1.8.0"
 cfg-if = "1.0"
@@ -21,3 +21,7 @@ aes = "0.8.4"
 lto = true
 codegen-units = 1
 opt-level = 3
+
+[profile.release-with-debug]
+inherits = "release"
+debug = true

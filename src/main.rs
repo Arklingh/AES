@@ -32,14 +32,12 @@ fn main() {
             maximize_button: Some(false),
             ..Default::default()
         },
-        // renderer: eframe::Renderer::Glow
         default_theme: Theme::Dark,
-        hardware_acceleration: eframe::HardwareAcceleration::Off,
         ..Default::default()
     };
 
     let _ = eframe::run_native(
-        "AES v.0.5.0",
+        "AES v.0.6.0",
         options,
         Box::new(|_cc| Box::<MyApp>::default()),
     );
@@ -52,7 +50,7 @@ enum Algorithm {
     Aes256,
 }
 
-#[derive(PartialEq, Debug, Clone, Copy)]
+#[derive(PartialEq, Debug, Clone, Copy, Eq)]
 enum Implementation {
     Software,
     Hardware,
@@ -144,7 +142,7 @@ impl Default for MyApp {
                 key192: [0; 24],
                 key256: [0; 32],
             },
-            num_threads: num_cpus::get_physical(),
+            num_threads: if num_cpus::get_physical() > 2 { num_cpus::get_physical() } else { 1 },
             buffer_size: DEFAULT_BUFFER_SIZE,
             result_time: Duration::new(0, 0),
             processing: false,
@@ -411,7 +409,7 @@ impl eframe::App for MyApp {
                         .min_size(eframe::epaint::Vec2 { x: 90.0, y: 30.0 })
                         .shortcut_text("Ctrl+E"),
                 );
-                
+                ui.label("\n");
                 let pos = egui::AboveOrBelow::Below;
 
                 if start_button.clicked() || ui.input(|i| i.modifiers.ctrl && i.key_pressed(egui::Key::S)) && self.processing == false {
@@ -733,81 +731,12 @@ fn check_len(input: &String, algorithm: Algorithm) -> bool {
     }
 }
 
-/* #[test]
-fn test_aes_encryption_decryption() {
-    // Define test parameters
-    let original_content = b"Hello, this is a test for AES encryption and decryption!!!!!!!!!";
-    let buffer_size = 4 * 1024;
-    let num_threads = 4;
-
-    // Paths for temporary files
-    let input_file_path = "test_input.bin";
-    let encrypted_file_path = "test_encrypted.bin";
-    let decrypted_file_path = "test_decrypted.bin";
-
-    let mut input_file = File::create(input_file_path).expect("Failed to create input file");
-    input_file.write_all(original_content).expect("Failed to write test content to input file");
-    
-    // Encryption keys and algorithm configuration
-    let keys = KeysArr {
-        key128: [1; 16],
-        key192: [1; 24],
-        key256: [1; 32],
-    };
-
-    // Encrypt the file
-    let encrypt_duration = process(
-        input_file_path.to_string(),
-        encrypted_file_path.to_string(),
-        Algorithm::Aes128,
-        Action::Encrypt,
-        Implementation::Hardware, 
-        keys.clone(),
-        num_threads,
-        buffer_size,
-    );
-    println!("Encryption completed in {:?}", encrypt_duration);
-
-    let mut encrypted_file= File::open(encrypted_file_path).expect("not open");
-    let mut encrypted_content = Vec::new();
-    encrypted_file.read_to_end(&mut encrypted_content).expect("awaawaw");
-    dbg!(encrypted_content.len());
-
-    // Decrypt the file
-    let decrypt_duration = process(
-        encrypted_file_path.to_string(),
-        decrypted_file_path.to_string(),
-        Algorithm::Aes128,
-        Action::Decrypt,
-        Implementation::Hardware,
-        keys.clone(),
-        num_threads,
-        buffer_size,
-    );
-    println!("Decryption completed in {:?}", decrypt_duration);
-
-    // Verify the decrypted content matches the original content
-    let mut decrypted_file = File::open(decrypted_file_path).expect("Failed to open decrypted file");
-    let mut decrypted_content = Vec::new();
-    decrypted_file.read_to_end(&mut decrypted_content).expect("Failed to read decrypted file");
-
-    dbg!(original_content.len());
-    dbg!(decrypted_content.len());
-
-    assert_eq!(original_content, decrypted_content.as_slice(), "Decrypted content does not match original content");
-
-    // Cleanup temporary files
-    std::fs::remove_file(input_file_path).expect("Failed to delete input file");
-    std::fs::remove_file(encrypted_file_path).expect("Failed to delete encrypted file");
-    std::fs::remove_file(decrypted_file_path).expect("Failed to delete decrypted file");
-} */
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::Duration;
     use plotters::prelude::*;
-    
+    use std::time::Duration;
+
     // Constant file names
     const INPUT_FILE: &str = "./input/1GB.bin";
     const OUTPUT_FILE: &str = "output.txt";
@@ -833,7 +762,6 @@ mod tests {
                 num_threads,
                 buffer_size,
             );
-            dbg!("Threads: {}, Time: {:?}", num_threads, duration);
             results.push((num_threads, duration));
         }
 
@@ -844,7 +772,11 @@ mod tests {
         let root = BitMapBackend::new("encryption_time_plot.png", (1920, 1080)).into_drawing_area();
         root.fill(&WHITE)?;
 
-        let max_time = results.iter().map(|&(_, dur)| dur.as_millis()).max().unwrap_or(0);
+        let max_time = results
+            .iter()
+            .map(|&(_, dur)| dur.as_millis())
+            .max()
+            .unwrap_or(0);
 
         let mut chart = ChartBuilder::on(&root)
             .caption("Encryption Time vs. Number of Threads", ("sans-serif", 60)) // Збільшено розмір заголовка
@@ -855,15 +787,17 @@ mod tests {
 
         chart
             .configure_mesh()
-            .x_desc("Number of Threads") 
-            .y_desc("Time (ms)")         
+            .x_desc("Number of Threads")
+            .y_desc("Time (ms)")
             .axis_desc_style(("sans-serif", 28)) // Збільшено розмір підписів осей
-            .label_style(("sans-serif", 24))     // Збільшено розмір міток на осях
+            .label_style(("sans-serif", 24)) // Збільшено розмір міток на осях
             .draw()?;
 
         chart
             .draw_series(LineSeries::new(
-                results.iter().map(|&(threads, duration)| (threads as i32, duration.as_millis())),
+                results
+                    .iter()
+                    .map(|&(threads, duration)| (threads as i32, duration.as_millis())),
                 &RED,
             ))?
             .label("Time (ms)")
@@ -879,93 +813,21 @@ mod tests {
         Ok(())
     }
 
-    /* /// Function to plot the results using the plotters crate
-    fn plot_results(results: &[(usize, Duration)]) -> Result<(), Box<dyn std::error::Error>> {
-        let root = BitMapBackend::new("encryption_time_plot.png", (1920, 1080)).into_drawing_area();
-        root.fill(&WHITE)?;
-
-        let max_time = results.iter().map(|&(_, dur)| dur.as_millis()).max().unwrap_or(0);
-
-        let mut chart = ChartBuilder::on(&root)
-            .caption("Encryption Time vs. Number of Threads", ("sans-serif", 44))
-            .margin(20)
-            .x_label_area_size(50)
-            .y_label_area_size(60)
-            .build_cartesian_2d(1..15, 1..max_time)?;
-
-        chart
-            .configure_mesh()
-            .x_desc("Number of Threads") 
-            .y_desc("Time (ms)")         
-            .axis_desc_style(("sans-serif", 20)) 
-            .label_style(("sans-serif", 16))     
-            .draw()?;
-
-        chart
-            .draw_series(LineSeries::new(
-                results.iter().map(|&(threads, duration)| (threads as i32, duration.as_millis())),
-                &RED,
-            ))?
-            .label("Time (ms)")
-            .legend(|(x, y)| PathElement::new([(x, y), (x + 20, y)], &RED));
-
-        chart
-            .configure_series_labels()
-            .background_style(&WHITE.mix(0.8))
-            .border_style(&BLACK)
-            .draw()?;
-
-        Ok(())
-    } */
-    
-
-    /* /// Function to plot the results using the plotters crate
-    fn plot_results(results: &[(usize, Duration)]) -> Result<(), Box<dyn std::error::Error>> {
-        let root = BitMapBackend::new("encryption_time_plot.png", (1920, 1080)).into_drawing_area();
-        root.fill(&WHITE)?;
-
-        let max_time = results.iter().map(|&(_, dur)| dur.as_millis()).max().unwrap_or(0);
-
-        let mut chart = ChartBuilder::on(&root)
-            .caption("Encryption Time vs. Number of Threads", ("sans-serif", 44))
-            .margin(20)
-            .x_label_area_size(30)
-            .y_label_area_size(40)
-            .build_cartesian_2d(1..15, 1..max_time)?;
-
-        chart.configure_mesh().draw()?;
-
-        chart
-            .draw_series(LineSeries::new(
-                results.iter().map(|&(threads, duration)| (threads as i32, duration.as_millis())),
-                &RED,
-            ))?
-            .label("Time (ms)")
-            .legend(|(x, y)| PathElement::new([(x, y), (x + 20, y)], &RED));
-
-        chart
-            .configure_series_labels()
-            .background_style(&WHITE.mix(0.8))
-            .border_style(&BLACK)
-            .draw()?;
-
-        Ok(())
-    } */
-
     #[test]
-    fn test_benchmarking_and_plotting() {
-        let algorithm = Algorithm::Aes192;
+    pub fn test_benchmarking_and_plotting() {
+        let algorithm = Algorithm::Aes128;
         let action = Action::Encrypt;
         let implem = Implementation::Software;
         let keys = KeysArr {
-            key128: [1u8; 16],
-            key192: [1u8; 24],
-            key256: [1u8; 32],
+            key128: [0u8; 16],
+            key192: [0u8; 24],
+            key256: [0u8; 32],
         };
         let buffer_size = DEFAULT_BUFFER_SIZE;
 
         // Run the benchmarking process
         let results = benchmark_process(algorithm, action, implem, keys, buffer_size);
+        dbg!(&results);
 
         // Plot the results
         if let Err(e) = plot_results(&results) {
